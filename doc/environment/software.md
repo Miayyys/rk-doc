@@ -16,7 +16,7 @@ related:
 | 主机发行版 | Arch Linux | 用户提供 |
 | 主机内核 | 未记录 | 待确认 |
 | 主机架构 | 未记录 | 待确认 |
-| 当前项目 Git | Git 2.55.0；有效工作树，分支 `master`，尚无提交 | 已验证 |
+| 当前项目 Git | Git 2.55.0；有效工作树，分支 `master`；首次提交 `2ed79a1` 已创建 | 已验证 |
 | 板端操作系统 | Ubuntu 22.04 LTS，Jammy Jellyfish，`ID=ubuntu`、`ID_LIKE=debian`（`/etc/os-release`） | 已验证 |
 | 默认图形桌面状态 | systemd 默认目标为 `graphical.target`；显示实际出画未验证 | 已验证 / 待确认 |
 | Bootloader 版本 | 未知 | 待确认 |

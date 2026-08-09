@@ -45,7 +45,7 @@ related:
 - **已验证**：当前已挂载根文件系统的 `/boot` 为空，未发现内核镜像、DTB、`extlinux/` 或其他启动配置；这不排除 eMMC 独立分区中存在启动组件。见[实验 EXP-20260807-002](../experiment/exp-20260807-002-boot-linux-via-debug-uart.md)。
 - **已验证**：当前 eMMC 有 8 个分区；`p1` 标签为 `uboot`，`p3` 标签为 `boot`，`p6` 为挂载到 `/` 的 ext4 `rootfs`。`p3` 的开头是一个声明大小为 1536 字节的 DTB v17，且不等同于大小为 151552 字节的运行时 FDT；其用途和其余内容待验证。详见[eMMC 分区笔记](../note/r1-emmc-partition-layout.md)。
 - **已验证**：Arch Linux 主机的 `/usr/bin/rkdeveloptool` 将设备报告为 `DevNo=1 Vid=0x2207,Pid=0x350b,LocationID=106 Maskrom`；见[实验 EXP-20260805-001](../experiment/exp-20260805-001-identify-rockusb-device.md)。
-- **已验证**：当前项目已经是有效 Git 工作树；当前分支为 `master`，尚无提交，`.gitignore`、`AGENTS.md` 和 `doc/` 均未跟踪。Agent 环境以只读方式访问 `.git`。见[ISSUE-20260809-002](../issue/issue-20260809-002-read-only-git-mount.md)。
+- **已验证**：当前项目已经是有效 Git 工作树；当前分支为 `master`。必要的 `.gitignore`、`AGENTS.md` 和 `doc/` 共 39 个文件已纳入首次提交 `2ed79a1`（`docs: initialize RK3588 learning repository`）。见[ISSUE-20260809-002](../issue/issue-20260809-002-read-only-git-mount.md)。
 - **资料记载**：R1 使用 RK3588S，32 GB 配置为板载 eMMC 可选规格；见[硬件环境基线](../environment/hardware.md)。
 - **推测**：先前进入 MaskROM 可能由按键、上电/连接顺序或当时的启动介质状态触发；该推测尚未解释为何已可启动的 eMMC 当时未被加载。
 - **已验证**：`rk3588_spl_loader.bin` 曾被观察到存在且大小为 0 字节，随后已不存在。
