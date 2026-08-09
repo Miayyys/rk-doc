@@ -1,0 +1,3 @@
+doc/.obsidian/*
+!doc/.obsidian/app.json
+!doc/.obsidian/templates.json
