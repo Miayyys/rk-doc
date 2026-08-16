@@ -7,3 +7,5 @@
 ## 索引
 
 - [DEC-20260807-001：采用 Obsidian 组织学习文档](dec-20260807-001-adopt-obsidian-vault.md)
+- [DEC-20260810-002：Linux+Zephyr AMP 长期学习方向](dec-20260810-002-linux-zephyr-amp-long-term-direction.md)
+- [DEC-20260813-003：NPU 上运行 LLM 作为项目核心](dec-20260813-003-npu-llm-required-project-core.md)

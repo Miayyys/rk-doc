@@ -1,0 +1,7 @@
+/home/loser/Study/rk3588/build/uboot-evb-rk3588/u-boot:              ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, with debug_info, not stripped
+/home/loser/Study/rk3588/build/uboot-evb-rk3588/u-boot-nodtb.bin:    PCX ver. 2.5 image data bounding box [8223, 54531] - [0, 128], 20-bit uncompressed
+/home/loser/Study/rk3588/build/uboot-evb-rk3588/u-boot.dtb:          Device Tree Blob version 17, size=203520, boot CPU=0, string block size=17079, DT structure block size=182288
+/home/loser/Study/rk3588/build/uboot-evb-rk3588/u-boot-dtb.bin:      PCX ver. 2.5 image data bounding box [8223, 54531] - [0, 128], 20-bit uncompressed
+/home/loser/Study/rk3588/build/uboot-evb-rk3588/u-boot-rockchip.bin: ISO-8859 text, with very long lines (65536), with no line terminators
+/home/loser/Study/rk3588/build/uboot-evb-rk3588/idbloader.img:       empty
+/home/loser/Study/rk3588/build/uboot-evb-rk3588/simple-bin.fit.itb:  Device Tree Blob version 17, size=1023562, boot CPU=0, string block size=162, DT structure block size=1023344

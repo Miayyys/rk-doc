@@ -1,0 +1,119 @@
+tcpdump: listening on enp108s0, link-type EN10MB (Ethernet), snapshot length 262144 bytes
+16:08:39.265450 IP (tos 0xc0, ttl 64, id 0, offset 0, flags [DF], proto UDP (17), length 308)
+    0.0.0.0.68 > 255.255.255.255.67: [udp sum ok] BOOTP/DHCP, Request from 1e:a8:e4:78:ee:77, length 280, xid 0x21fe5140, secs 1, Flags [none] (0x0000)
+	 Client-Ethernet-Address 1e:a8:e4:78:ee:77
+	 Vendor-rfc1048 Extensions
+	   Magic Cookie 0x63825363
+	   DHCP-Message (53), length 1: Discover
+	   Client-ID (61), length 7: ether 1e:a8:e4:78:ee:77
+	   Parameter-Request (55), length 17:
+	     Subnet-Mask (1), Time-Zone (2), Domain-Name-Server (6), Hostname (12)
+	     Domain-Name (15), MTU (26), BR (28), Classless-Static-Route (121)
+	     Default-Gateway (3), Static-Route (33), YD (40), YS (41)
+	     NTP (42), Unknown (119), Classless-Static-Route-Microsoft (249), Unknown (252)
+	     RP (17)
+	   MSZ (57), length 2: 576
+	   Hostname (12), length 2: "R1"
+	   END (255), length 0
+16:08:41.718701 IP (tos 0xc0, ttl 64, id 0, offset 0, flags [DF], proto UDP (17), length 308)
+    0.0.0.0.68 > 255.255.255.255.67: [udp sum ok] BOOTP/DHCP, Request from 1e:a8:e4:78:ee:77, length 280, xid 0xaf9b2838, secs 2, Flags [none] (0x0000)
+	 Client-Ethernet-Address 1e:a8:e4:78:ee:77
+	 Vendor-rfc1048 Extensions
+	   Magic Cookie 0x63825363
+	   DHCP-Message (53), length 1: Discover
+	   Client-ID (61), length 7: ether 1e:a8:e4:78:ee:77
+	   Parameter-Request (55), length 17:
+	     Subnet-Mask (1), Time-Zone (2), Domain-Name-Server (6), Hostname (12)
+	     Domain-Name (15), MTU (26), BR (28), Classless-Static-Route (121)
+	     Default-Gateway (3), Static-Route (33), YD (40), YS (41)
+	     NTP (42), Unknown (119), Classless-Static-Route-Microsoft (249), Unknown (252)
+	     RP (17)
+	   MSZ (57), length 2: 576
+	   Hostname (12), length 2: "R1"
+	   END (255), length 0
+16:08:45.924807 IP (tos 0xc0, ttl 64, id 0, offset 0, flags [DF], proto UDP (17), length 308)
+    0.0.0.0.68 > 255.255.255.255.67: [udp sum ok] BOOTP/DHCP, Request from 1e:a8:e4:78:ee:77, length 280, xid 0xbb5431ed, secs 6, Flags [none] (0x0000)
+	 Client-Ethernet-Address 1e:a8:e4:78:ee:77
+	 Vendor-rfc1048 Extensions
+	   Magic Cookie 0x63825363
+	   DHCP-Message (53), length 1: Discover
+	   Client-ID (61), length 7: ether 1e:a8:e4:78:ee:77
+	   Parameter-Request (55), length 17:
+	     Subnet-Mask (1), Time-Zone (2), Domain-Name-Server (6), Hostname (12)
+	     Domain-Name (15), MTU (26), BR (28), Classless-Static-Route (121)
+	     Default-Gateway (3), Static-Route (33), YD (40), YS (41)
+	     NTP (42), Unknown (119), Classless-Static-Route-Microsoft (249), Unknown (252)
+	     RP (17)
+	   MSZ (57), length 2: 576
+	   Hostname (12), length 2: "R1"
+	   END (255), length 0
+16:08:54.628346 IP (tos 0xc0, ttl 64, id 0, offset 0, flags [DF], proto UDP (17), length 308)
+    0.0.0.0.68 > 255.255.255.255.67: [udp sum ok] BOOTP/DHCP, Request from 1e:a8:e4:78:ee:77, length 280, xid 0x9e696193, secs 15, Flags [none] (0x0000)
+	 Client-Ethernet-Address 1e:a8:e4:78:ee:77
+	 Vendor-rfc1048 Extensions
+	   Magic Cookie 0x63825363
+	   DHCP-Message (53), length 1: Discover
+	   Client-ID (61), length 7: ether 1e:a8:e4:78:ee:77
+	   Parameter-Request (55), length 17:
+	     Subnet-Mask (1), Time-Zone (2), Domain-Name-Server (6), Hostname (12)
+	     Domain-Name (15), MTU (26), BR (28), Classless-Static-Route (121)
+	     Default-Gateway (3), Static-Route (33), YD (40), YS (41)
+	     NTP (42), Unknown (119), Classless-Static-Route-Microsoft (249), Unknown (252)
+	     RP (17)
+	   MSZ (57), length 2: 576
+	   Hostname (12), length 2: "R1"
+	   END (255), length 0
+16:08:57.108844 IP (tos 0x0, ttl 64, id 1072, offset 0, flags [none], proto UDP (17), length 328)
+    0.0.0.0.68 > 255.255.255.255.67: [udp sum ok] BOOTP/DHCP, Request from 1e:a8:e4:78:ee:77, length 300, xid 0xa24157ed, secs 764, Flags [none] (0x0000)
+	 Client-Ethernet-Address 1e:a8:e4:78:ee:77
+	 Vendor-rfc1048 Extensions
+	   Magic Cookie 0x63825363
+	   DHCP-Message (53), length 1: Discover
+	   Client-ID (61), length 19: hardware-type 255, e4:78:ee:77:00:01:00:01:2c:ef:d6:2e:82:60:69:32:2a:c7
+	   SLP-NA (80), length 0""
+	   Auto-Configure (116), length 1: Y
+	   MSZ (57), length 2: 1472
+	   Hostname (12), length 2: "R1"
+	   Unknown (145), length 1: 1
+	   Parameter-Request (55), length 14:
+	     Subnet-Mask (1), Classless-Static-Route (121), Static-Route (33), Default-Gateway (3)
+	     Domain-Name-Server (6), Hostname (12), Domain-Name (15), MTU (26)
+	     BR (28), Lease-Time (51), Server-ID (54), RN (58)
+	     RB (59), Unknown (119)
+	   END (255), length 0
+	   PAD (0), length 0, occurs 3
+16:09:10.736484 IP (tos 0xc0, ttl 64, id 0, offset 0, flags [DF], proto UDP (17), length 308)
+    0.0.0.0.68 > 255.255.255.255.67: [udp sum ok] BOOTP/DHCP, Request from 1e:a8:e4:78:ee:77, length 280, xid 0x7ccfe39c, secs 31, Flags [none] (0x0000)
+	 Client-Ethernet-Address 1e:a8:e4:78:ee:77
+	 Vendor-rfc1048 Extensions
+	   Magic Cookie 0x63825363
+	   DHCP-Message (53), length 1: Discover
+	   Client-ID (61), length 7: ether 1e:a8:e4:78:ee:77
+	   Parameter-Request (55), length 17:
+	     Subnet-Mask (1), Time-Zone (2), Domain-Name-Server (6), Hostname (12)
+	     Domain-Name (15), MTU (26), BR (28), Classless-Static-Route (121)
+	     Default-Gateway (3), Static-Route (33), YD (40), YS (41)
+	     NTP (42), Unknown (119), Classless-Static-Route-Microsoft (249), Unknown (252)
+	     RP (17)
+	   MSZ (57), length 2: 576
+	   Hostname (12), length 2: "R1"
+	   END (255), length 0
+16:10:00.875243 IP (tos 0x0, ttl 64, id 47944, offset 0, flags [none], proto UDP (17), length 328)
+    0.0.0.0.68 > 255.255.255.255.67: [udp sum ok] BOOTP/DHCP, Request from 1e:a8:e4:78:ee:77, length 300, xid 0xa24157ed, secs 828, Flags [none] (0x0000)
+	 Client-Ethernet-Address 1e:a8:e4:78:ee:77
+	 Vendor-rfc1048 Extensions
+	   Magic Cookie 0x63825363
+	   DHCP-Message (53), length 1: Discover
+	   Client-ID (61), length 19: hardware-type 255, e4:78:ee:77:00:01:00:01:2c:ef:d6:2e:82:60:69:32:2a:c7
+	   SLP-NA (80), length 0""
+	   Auto-Configure (116), length 1: Y
+	   MSZ (57), length 2: 1472
+	   Hostname (12), length 2: "R1"
+	   Unknown (145), length 1: 1
+	   Parameter-Request (55), length 14:
+	     Subnet-Mask (1), Classless-Static-Route (121), Static-Route (33), Default-Gateway (3)
+	     Domain-Name-Server (6), Hostname (12), Domain-Name (15), MTU (26)
+	     BR (28), Lease-Time (51), Server-ID (54), RN (58)
+	     RB (59), Unknown (119)
+	   END (255), length 0
+	   PAD (0), length 0, occurs 3

@@ -8,7 +8,12 @@
 
 - [Linux 内核启动参数：从 U-Boot 到 Ubuntu](linux-kernel-command-line.md)
 - [设备树的 `model` 与 `compatible`](device-tree-model-and-compatible.md)
+- [设备树节点如何绑定到 platform driver](device-tree-platform-driver-binding.md)
+- [GPIO 控制器、pinctrl 与运行时 gpiochip](gpio-controller-and-pinctrl.md)
 - [当前 R1 eMMC 分区布局与启动候选](r1-emmc-partition-layout.md)
+- [U-Boot FIT 镜像：FDT 容器与启动载荷](uboot-fit-image.md)
+- [U-Boot SPL 启动设备顺序与 `/chosen`](uboot-spl-boot-order.md)
+- [Rockchip 外部启动载荷与 Binman](rockchip-external-boot-blobs.md)
 
 ## 关联查阅方法
 
