@@ -2694,6 +2694,20 @@ I rkllm:  1673.56
 
 结论：**已验证**RKNPU 0.9.8 候选从 RAM 启动后可执行该 W8A8 RKLLM 模型的真实生成路径；旧系统的 `matmul(w8a8) run failed` 未复现。候选没有写入 p1/p3、rootfs 或 U-Boot 环境。由于显示 DRM 未编入，RKNPU 成为唯一 render 节点 `renderD128`；节点号变化不是 CPU 回退证据，sysfs 的 RKNPU driver 绑定才是判据。
 
+### 步骤 132：保存候选板级源码回退点
+
+目的：将可重建候选的 DTS 移植源码保存为 Git 提交，避免把体积较大的 `build/` 产物作为唯一回退手段。
+
+执行端：Arch 主机。`src/rockchip-linux-kernel-r1-dts-port` 的 `study/r1-dts-port` 分支提交了 11 个 DTS/Makefile 文件：
+
+```text
+799622bab arm64: dts: add Youyeetoo R1 board port
+```
+
+提交后该内核工作树为干净状态。`build/kernel-r1-nodisplay-nogpu` 与 `build/local/r1-20260816` 仍保留为可再生成的本地构建/分析产物，未纳入该源码提交。
+
+结论：**已验证**当前候选的板级源码层已有本地 Git 回退点；复现候选仍需参照本实验中记录的独立 `.config`、FIT 封装和 RAM 启动步骤。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
