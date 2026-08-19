@@ -27,11 +27,17 @@
 - [EXP-20260812-002：筛选第一个简单设备驱动实验候选](exp-20260812-002-select-first-simple-device.md)
 - [EXP-20260812-003：检查运行内核源码入口](exp-20260812-003-check-running-kernel-source-availability.md)
 - [EXP-20260812-004：定位上游 GPIO 驱动源码的有效 ref](exp-20260812-004-locate-upstream-gpio-source-ref.md)（进行中）
+- [EXP-20260819-001：探测 R1 MT7922 PCIe 枚举与驱动绑定](exp-20260819-001-probe-r1-mt7922-pcie.md)
 
 ### 阶段 5：边缘 AI
 
 - [EXP-20260814-001：检查 R1 NPU 首次配置脚本线索](exp-20260814-001-inspect-r1-npu-first-boot-script.md)（进行中）
 - [EXP-20260815-002：探测 R1 NPU 运行时链路](exp-20260815-002-probe-r1-npu-runtime-chain.md)（进行中）
+
+### Linux+Zephyr AMP 可行性
+
+- [EXP-20260817-001：盘点 R1 AMP 运行时前置条件](exp-20260817-001-inventory-r1-amp-runtime-prerequisites.md)
+- [EXP-20260819-002：从 R1 U-Boot 独立启动 Zephyr](exp-20260819-002-boot-zephyr-standalone-from-uboot.md)
 
 ### 阶段 0：镜像与恢复准备
 

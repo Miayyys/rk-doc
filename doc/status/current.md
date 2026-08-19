@@ -3,7 +3,7 @@ title: "当前学习状态"
 type: status
 status: active
 created: 2026-08-05
-updated: 2026-08-16
+updated: 2026-08-19
 tags: [rk3588, progress]
 related:
   - "[[status/history]]"
@@ -21,6 +21,8 @@ related:
   - "[[experiment/exp-20260814-001-inspect-r1-npu-first-boot-script]]"
   - "[[experiment/exp-20260815-001-inspect-r1-ubuntu-camera-image]]"
   - "[[experiment/exp-20260815-002-probe-r1-npu-runtime-chain]]"
+  - "[[experiment/exp-20260817-001-inventory-r1-amp-runtime-prerequisites]]"
+  - "[[experiment/exp-20260819-002-boot-zephyr-standalone-from-uboot]]"
   - "[[note/device-tree-platform-driver-binding]]"
   - "[[resource/youyeetoo-r1-documentation-repository]]"
   - "[[resource/r1-ubuntu-camera-image-v2-v3]]"
@@ -65,6 +67,8 @@ related:
 - **已验证**：主机已有 `DeepSeek-R1-Distill-Qwen-1.5B_W8A8_RK3588.rkllm` 候选文件，大小为 2,040,247,614 字节、SHA-256 为 `85123bc6796760c9e670d6676a7d3e9527d1847406807441976fe1206b04115b`；该文件已传至 R1 `/userdata/rkllm-api-demo/models/`，板端 SHA-256 一致。传输前 R1 `/userdata` 尚余约 14 GiB；总 RAM 3.8 GiB、无 swap、当时 available 为 3.2 GiB。精确下载来源仍待确认；原厂 RKNPU 0.8.2 不兼容，但该模型已在 RKNPU 0.9.8 RAM 候选上完成生成。见[模型资源档案](../resource/deepseek-r1-distill-qwen-1-5b-w8a8-rk3588.md)与[EXP-20260815-002](../experiment/exp-20260815-002-probe-r1-npu-runtime-chain.md)。
 - **已验证**：以保守参数启动的 `llm_demo-r1` 已到达 `user:`，但输入短 prompt `ok` 后重复输出 `E rkllm: matmul(w8a8) run failed`，没有生成文本。Runtime 初始化头明确警告本板 `rknpu driver version: 0.8.2` 过低，要求升级至 `0.9.7`；Runtime 为 1.3.0，模型 Toolkit 为 1.2.1b1、目标 RK3588、W8A8。失败后内存为 total 3.8 GiB、available 3.2 GiB、无 swap；已采集过滤后的内核日志，未见 OOM killer、IOMMU fault 或本次执行后的新 RKNPU 报错。SDK 的 0.9.8 驱动包已确认只是 `drivers/rknpu/` 内核源码子树；运行内核 `CONFIG_ROCKCHIP_RKNPU=y`，且匹配 modules/build 树缺失，故不能直接编译/加载 `.ko`。公开厂商 Linux 5.10 候选已浅克隆并固定 commit；其 RKNPU 配置/DRM GEM 结构与运行系统相符，但版本宏已确认也是 `0.8.2`，不能解决 Runtime 的最低版本要求；它与当前 Ubuntu 5.10.110 的精确匹配仍待确认。见[ISSUE-20260815-002](../issue/issue-20260815-002-rkllm-w8a8-matmul-run-failed.md)与[内核源码档案](../resource/youyeetoo-r1-linux-kernel-5-10.md)。
 - **用户提供**：最终拟完成 Linux+Zephyr AMP 项目：Linux 侧运行 LLM，Zephyr 侧计划使用 1–2 个 CPU 核执行实时任务；除实时性外，要求尽可能接近 MPU+MCU 的隔离性，并支持低延迟消息同步与高频、大量数据交换。该方向已作为长期技术决策记录；Zephyr 的具体任务、所需外设、数据方向和实时指标尚未确定，详见[DEC-20260810-002](../decision/dec-20260810-002-linux-zephyr-amp-long-term-direction.md)。
+- **已验证**：当前 R1 Linux 的 CPU `possible`、`present`、`online` 都为 `0-7`，即全部 8 个 CPU 由 Linux 在线管理；8 个 CPU DTS 节点的 `enable-method` 都为 `psci`。未发现 `/sys/class/remoteproc`、`/sys/bus/rpmsg`，也未在运行时 DTS 名称中发现 mailbox/remoteproc/RPMsg/shared-memory 节点；`/reserved-memory` 仅列出 CMA、显示资源与 ramoops，未发现可明确归属 Zephyr 的 carveout。本次 Kconfig 输出未显示 `CONFIG_REMOTEPROC` / `CONFIG_RPMSG` 为 `y`；通用 mailbox、CPU hotplug、IOMMU 与 Rockchip IOMMU 均为 `y`，且 `CONFIG_ROCKCHIP_AMP` 明确未启用。这排除了“直接复用已暴露 remoteproc/RPMsg/AMP 路径”的假设。原厂运行时 `/proc/iomem` 还证明，EVB AMP 示例的 24 MiB `0x00800000`–`0x02000000` 区会覆盖当前 Kernel code、reserved 与 Kernel data，不能直接复制到 R1 DTS。另一方面，已完成 NPU RAM 验证的 Rockchip 5.10.252 候选配置启用 `CONFIG_ROCKCHIP_AMP=y`、mailbox、Rockchip mailbox RPMsg 和 VirtIO RPMsg，可作为 AMP 原型的内核配置基线；其 RK3588 AMP DTS/RPMsg/CPU 控制参考仍需针对 R1 审计。通用 `rockchip_amp` 驱动具备读取 `amp-cpus`、通过 SiP SMC 启动 CPU、提供 `/sys/rk_amp/boot_cpu` 的能力，但当前 RK3588 DTS 文件集合没有 `amp-cpus`，尚未证明其使用该能力。未离线 CPU、未启动 Zephyr、未写 eMMC。见[EXP-20260817-001](../experiment/exp-20260817-001-inventory-r1-amp-runtime-prerequisites.md)。
+- **已验证**：Zephyr v4.4.0（commit `684c9e8f32e4373a21098559f748f06915f950c9`）已为 `roc_rk3588_pc/rk3588` 构建，并在启用 `CONFIG_ARM64_DCACHE_ALL_OPS=y`、`CONFIG_ARM64_BOOT_DISABLE_DCACHE=y` 后生成 36,960 B 固件；主机与板端 SHA-256 均为 `782af16b0c0c7e6a702518d787d0abe29ae9157694136022a807e3e93acd4ad5`。R1 U-Boot 从 `mmc 0:8` 加载该固件到 `0x50000000`，`go 0x50000000` 成功显示 Zephyr v4.4.0 和 `Hello World! roc_rk3588_pc/rk3588`。`booti` 与 `bootm` 尝试均在厂商 U-Boot 内同步异常，未进入 Zephyr。本结果只验证单独启动，不是 Linux+Zephyr 并行运行、CPU/内存隔离或 IPC 证据。见[EXP-20260819-002](../experiment/exp-20260819-002-boot-zephyr-standalone-from-uboot.md)。
 - **用户提供**：开发板准确型号为风火轮（youyeetoo）R1。
 - **用户提供**：开发板为 R1 V2；PCB 丝印照片或文字尚未保存。
 - **用户提供**：板上有两颗物理 LED；其颜色、功能、供电/控制路径与 Linux 对应关系未确认。
@@ -187,6 +191,8 @@ related:
 | 确定近期项目的 NPU LLM 核心约束 | 已完成 | [DEC-20260813-003](../decision/dec-20260813-003-npu-llm-required-project-core.md) |
 | NPU 厂商初始化脚本的首轮定位 | 进行中 | RK3588 分支与 NPU tar、清理、first-boot 标记已定位；外层条件待读，见 [EXP-20260814-001](../experiment/exp-20260814-001-inspect-r1-npu-first-boot-script.md) |
 | NPU 最小运行时链路 | 已验证（RAM 候选） | RKNPU 0.9.8 候选进入 Linux 5.10.252，`renderD128` 绑定 `RKNPU`，同一 W8A8 模型已生成 `Alright,`；当前候选不含 Rockchip 显示 DRM/Mali GPU，且未写 eMMC，见 [ISSUE-20260815-002](../issue/issue-20260815-002-rkllm-w8a8-matmul-run-failed.md) |
+| AMP 运行时前置盘点 | 已完成首轮 | 原厂 R1 未启用 `ROCKCHIP_AMP`，也未暴露 remoteproc/RPMsg 或 Zephyr carveout；8 CPU 经 PSCI 管理。已验证的 NPU 候选内核已启用 AMP/RPMsg，R1 内存与 DTS 仍需适配，见 [EXP-20260817-001](../experiment/exp-20260817-001-inventory-r1-amp-runtime-prerequisites.md) |
+| Zephyr A55 独立 RAM 启动 | 已验证 | U-Boot `ext4load` 后以 `go 0x50000000` 启动 Zephyr v4.4.0 hello_world；Linux 未并行运行，见 [EXP-20260819-002](../experiment/exp-20260819-002-boot-zephyr-standalone-from-uboot.md) |
 | 官方 Ubuntu camera 候选镜像身份核对 | 进行中 | 文件大小、SHA-256 与 Rockchip `RKFW` 容器格式已确认；容器内载荷、板型适用性和厂商校验待确认，见 [EXP-20260815-001](../experiment/exp-20260815-001-inspect-r1-ubuntu-camera-image.md) |
 | 建立文档结构和记录规范 | 已完成 | [知识库首页](../home.md)与[记录规范](../recording-standard.md) |
 | 建立 Obsidian 知识关联与查阅入口 | 已完成 | [DEC-20260807-001](../decision/dec-20260807-001-adopt-obsidian-vault.md)与[知识库首页](../home.md) |
@@ -237,7 +243,7 @@ related:
 - **待确认**：电源规格、上电时 LED/显示表现和 Type-C 所在的实物接口标签。
 - **待确认**：USB 转串口模块的芯片与逻辑电平；先前 MaskROM 与本次 Linux 启动的触发条件。
 
-## 唯一下一步
+## 既往过程摘要（非当前下一步）
 
 近期项目已调整为 R1 NPU 实际运行 LLM；GPIO 驱动样本阅读在操作路由表处暂停，不再作为唯一主线。候选镜像与当前 `rkdeveloptool` 的命令集不匹配：该工具没有接收完整 `RKFW` 的统一固件升级命令，绝不能以低层 LBA、分区、GPT 或擦除命令替代。
 
@@ -323,4 +329,10 @@ related:
 
 补充：U-Boot 提供 `tftpbootm [loadAddress] [[hostIPaddr:]bootfilename]` 和 `dhcp` 启动命令；三项网络环境变量均未定义。它们将来可用于非持久 RAM 测试，但当前先只读确认主机 `enp108s0` 地址和 TFTP 服务安装状态；不启动服务、不下载、不启动、不写入板子。
 
-补充：RKNPU 0.9.8 的“无 Rockchip display DRM、无 Mali GPU”候选已通过 userdata→RAM 的 FIT 路径启动到 Linux `5.10.252`；没有写入 p1/p3、rootfs 或 U-Boot 环境。候选中 `/dev/dri/renderD128` 的 sysfs driver 为 `RKNPU`，OF compatible 为 `rockchip,rk3588-rknpu`。使用原有 DeepSeek-R1-Distill-Qwen-1.5B W8A8 `.rkllm` 模型输入 `ok` 已生成 `Alright,`；Prefill 20.37 tokens/s、Generate 7.99 tokens/s、峰值内存 1673.56 MB。候选板级 DTS 源码已保存为 `src/rockchip-linux-kernel-r1-dts-port` 的 `study/r1-dts-port` 分支提交 `799622bab`；`build/` 产物不纳入 Git。当前候选刻意不提供 Rockchip 显示 DRM 与 Mali GPU；它是 NPU LLM 的可复现验证载荷，不是可烧录的完整系统。PCIe link failure 与 PL330 `Bad Desc` 启动日志尚未分析，但没有阻止本次登录和推理。唯一下一步：在当前候选的 `user:` 提示符执行一条多 token 的项目相关 prompt，保留完整回答和性能输出，作为后续 Linux→Zephyr 受限命令接口的 LLM 基线。详见[ISSUE-20260815-002](../issue/issue-20260815-002-rkllm-w8a8-matmul-run-failed.md)与[EXP-20260815-002](../experiment/exp-20260815-002-probe-r1-npu-runtime-chain.md)。
+补充：RKNPU 0.9.8 的“无 Rockchip display DRM、无 Mali GPU”候选已通过 userdata→RAM 的 FIT 路径启动到 Linux `5.10.252`；没有写入 p1/p3、rootfs 或 U-Boot 环境。候选中 `/dev/dri/renderD128` 的 sysfs driver 为 `RKNPU`，OF compatible 为 `rockchip,rk3588-rknpu`。使用原有 DeepSeek-R1-Distill-Qwen-1.5B W8A8 `.rkllm` 模型输入 `ok` 已生成 `Alright,`；Prefill 20.37 tokens/s、Generate 7.99 tokens/s、峰值内存 1673.56 MB。候选板级 DTS 源码已保存为 `src/rockchip-linux-kernel-r1-dts-port` 的 `study/r1-dts-port` 分支提交 `799622bab`；`build/` 产物不纳入 Git。当前候选刻意不提供 Rockchip 显示 DRM 与 Mali GPU；它是 NPU LLM 的可复现验证载荷，不是可烧录的完整系统。PCIe link failure 与 PL330 `Bad Desc` 启动日志尚未分析，但没有阻止本次登录和推理。项目近期顺序已调整为：先验证 Linux+Zephyr AMP 的 CPU、内存、启动与最小 IPC 可行性，再集成 LLM 和实时外设；保持 eMMC `boot` 分区不变。首次运行时盘点已完成：全部 CPU 经 PSCI 管理，未发现现成 remoteproc/RPMsg、Zephyr carveout 或相关 DTS 名称节点；而 Rockchip BSP 中已发现 RK3588 AMP DTS/RPMsg 参考。详见[DEC-20260810-002](../decision/dec-20260810-002-linux-zephyr-amp-long-term-direction.md)、[EXP-20260817-001](../experiment/exp-20260817-001-inventory-r1-amp-runtime-prerequisites.md)、[ISSUE-20260815-002](../issue/issue-20260815-002-rkllm-w8a8-matmul-run-failed.md)与[EXP-20260815-002](../experiment/exp-20260815-002-probe-r1-npu-runtime-chain.md)。唯一下一步：主机只读阅读 `rk3588-amp.dtsi`，提取 CPU、内存、通信和外设资源划分；不改源码、不构建、不操作板端。
+
+补充：学习者购买的 MT7922 已在候选系统枚举为 PCI `14c3:0616`，但 sysfs 显示 `unbound`；当前 Rockchip 5.10.252 源码没有 `mt7921` 驱动目录，候选配置也没有 `CONFIG_MT7921E`。该支线暂缓，不在 AMP 原型期间回移无线驱动；继续使用有线网络。见[EXP-20260819-001](../experiment/exp-20260819-001-probe-r1-mt7922-pcie.md)。唯一下一步回到 AMP 启动责任链：定位被排除 `cpu_l3` 的远端固件装载者与入口地址来源；不改 DTS、不调用 SMC、不写 eMMC。
+
+## 唯一下一步
+
+基于已验证的 Linux 5.10.252 候选制作一个**仅供静态检查**的 AMP DTS 变体：从 Linux CPU 拓扑移除 `cpu_l3`，同步移除 ARM PMU 对该核的 affinity，并为当前 Zephyr 链接区域 `0x50000000`–`0x50100000` 增加 1 MiB `no-map` 保留内存。只编译 DTB、反编译并核对 CPU 与内存节点；暂不调用 SiP SMC、不启动第二个 CPU、不写 eMMC。成功标准只是“Linux DTB 不再声明该 CPU 且不再分配 Zephyr 区域”，不是 AMP 已运行。
