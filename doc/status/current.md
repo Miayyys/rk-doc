@@ -177,7 +177,7 @@ related:
 - **已验证**：在上述更新报告后，R1 的 Debug UART root Shell 输出 Ubuntu 22.04、`Linux R1 5.10.110 #4 SMP Sun Sep 29 10:38:13 CST 2024`，根文件系统为 `/dev/mmcblk0p6`，systemd 状态为 `degraded`。这验证系统可从 eMMC 启动；与更新前的版本字符串相同，不能单靠此证明候选文件的精确内容。见[EXP-20260815-001](../experiment/exp-20260815-001-inspect-r1-ubuntu-camera-image.md)。
 - **已验证**：更新后 `systemctl --failed --no-pager` 只列出 `rockchip.service`，不再列出更新前曾失败的 `apport-autoreport.service`。因此当前 `degraded` 至少由 `rockchip.service` 直接造成；前者未被列出不等同于其根因已解决。见[ISSUE-20260810-001](../issue/issue-20260810-001-systemd-degraded-failed-units.md)。
 - **已验证**：Arch Linux 主机的 `/usr/bin/rkdeveloptool` 将设备报告为 `DevNo=1 Vid=0x2207,Pid=0x350b,LocationID=106 Maskrom`；见[实验 EXP-20260805-001](../experiment/exp-20260805-001-identify-rockusb-device.md)。
-- **已验证**：当前项目已经是有效 Git 工作树；当前分支为 `master`。必要的 `.gitignore`、`AGENTS.md` 和 `doc/` 共 39 个文件已纳入首次提交 `2ed79a1`（`docs: initialize RK3588 learning repository`）。见[ISSUE-20260809-002](../issue/issue-20260809-002-read-only-git-mount.md)。
+- **已验证**：当前项目已经是有效 Git 工作树。GitHub 远端默认/发布分支为 `main`，本地 `main` 跟踪 `origin/main`；误推到远端的 `master` 已删除。根工作树仍停留在本地 `master` 并含学习者的未提交内容，因此未强制切换。GitHub 发布直接使用已配置的 SSH 凭据，不依赖 `gh`；首次提交 `2ed79a1` 及 ISSUE 中当时的 `master` 输出作为历史证据保留。见[ISSUE-20260809-002](../issue/issue-20260809-002-read-only-git-mount.md)、[状态变更历史](history.md)和[软件环境基线](../environment/software.md)。
 - **资料记载**：R1 使用 RK3588S，32 GB 配置为板载 eMMC 可选规格；见[硬件环境基线](../environment/hardware.md)。
 - **推测**：先前进入 MaskROM 可能由按键、上电/连接顺序或当时的启动介质状态触发；该推测尚未解释为何已可启动的 eMMC 当时未被加载。
 - **已验证**：`rk3588_spl_loader.bin` 曾被观察到存在且大小为 0 字节，随后已不存在。

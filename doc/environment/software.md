@@ -3,7 +3,7 @@ title: "软件环境基线"
 type: environment
 status: active
 created: 2026-08-05
-updated: 2026-08-09
+updated: 2026-08-19
 tags: [arch-linux, rk3588]
 related:
   - "[[status/current]]"
@@ -18,7 +18,8 @@ related:
 | 主机备份目标可用空间 | `/home` 所在文件系统可用 186 GiB；足以容纳约 29 GiB 的当前 eMMC 原始镜像并保留校验空间 | 已验证（2026-08-09） |
 | 主机内核 | 未记录 | 待确认 |
 | 主机架构 | 未记录 | 待确认 |
-| 当前项目 Git | Git 2.55.0；有效工作树，分支 `master`；首次提交 `2ed79a1` 已创建 | 已验证 |
+| 当前项目 Git | Git 2.55.0；GitHub 远端为 `git@github.com:Miayyys/rk-doc.git`，默认/发布分支为 `main`；本地 `main` 跟踪 `origin/main`。根工作树仍停留在本地 `master`（修正前为 `cae6fc8`）并含学习者的未提交内容，因此未强制切换分支。首次提交 `2ed79a1` 是历史事实 | 已验证（2026-08-19） |
+| GitHub 文档发布方式 | 直接使用已配置的 Git SSH 凭据推送，不要求安装或登录 GitHub CLI。此次环境中默认 SSH 路由异常，实际通过 `ssh.github.com:443` 强制 IPv4 完成非强制推送；误建的远端 `master` 已删除 | 已验证（2026-08-19） |
 | 板端操作系统 | Ubuntu 22.04 LTS，Jammy Jellyfish，`ID=ubuntu`、`ID_LIKE=debian`（`/etc/os-release`） | 已验证 |
 | 默认图形桌面状态 | systemd 默认目标为 `graphical.target`；显示实际出画未验证 | 已验证 / 待确认 |
 | Bootloader 版本 | U-Boot `2017.09-g33a7c066a8-dirty #youyeetoo1`（来自 `p1` 可打印构建字符串；运行中的实际执行组件与完整载荷布局待进一步确认） | 已验证 / 待确认 |
