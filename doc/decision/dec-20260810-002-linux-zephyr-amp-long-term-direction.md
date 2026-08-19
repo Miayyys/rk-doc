@@ -3,11 +3,13 @@ title: "DEC-20260810-002 Linux+Zephyr AMP 长期学习方向"
 type: decision
 status: active
 created: 2026-08-10
-updated: 2026-08-10
+updated: 2026-08-19
 tags: [rk3588, linux, zephyr, amp, edge-ai]
 related:
   - "[[roadmap/learning-roadmap]]"
   - "[[status/current]]"
+  - "[[experiment/exp-20260817-001-inventory-r1-amp-runtime-prerequisites]]"
+  - "[[experiment/exp-20260819-002-boot-zephyr-standalone-from-uboot]]"
 ---
 
 # DEC-20260810-002 Linux+Zephyr AMP 长期学习方向
@@ -32,7 +34,18 @@ related:
 
 “接近 MPU+MCU”在此仅是期望的资源/故障隔离目标，不能预先等同于独立 MCU 的物理或安全隔离。
 
+## 近期实施顺序（2026-08-17）
+
+将近期工作明确拆成两个阶段，而不是立即将 LLM、外设控制和 Zephyr 一次组装：
+
+1. **AMP 可行性原型优先**：先以一个 CPU 核、保留内存和 UART 心跳验证 Zephyr 的启动责任链与独立运行；随后验证最小 Linux↔Zephyr 通信。此阶段不要求接入 GPIO、传感器或 LLM。
+2. **系统组装随后进行**：仅在 AMP 原型取得实机证据后，再将已验证的 Linux/RKNPU LLM 与 Zephyr 的实时外设任务通过受控 IPC 集成。
+
+当前 RKNPU 0.9.8 FIT 是仅用于 RAM 启动验证的候选：它刻意关闭 Rockchip 显示 DRM 与 Mali GPU，虽已完成 W8A8 LLM 生成，但不是可替换原厂系统的完整 eMMC 启动镜像。因此近期保持原厂 eMMC `boot` 分区不变；候选 FIT 仅保留在 `/userdata` 和主机构建目录，作为可回归的临时启动载荷。
+
+AMP 的第一轮只读勘察要回答三个问题：现有启动链能否为 Zephyr 保留并启动次级 CPU、Linux 能否可靠地排除该 CPU 与对应内存、现有 DTS/内核是否已有 remoteproc、mailbox 或其他合适 IPC 基础。CPU 亲和性或绑核本身不作为 AMP 隔离成功证据。
+
 ## 影响与复查条件
 
 - 影响：后续 Linux 学习优先关注启动链、内存、设备树、驱动模型、中断、缓存和通信机制，为 AMP 做前置准备。
-- 何时需要重新评估：明确 Zephyr 的任务、独占外设、消息大小、峰值吞吐与时延目标后；或验证表明同 SoC 隔离无法满足实际需求时。
+- 何时需要重新评估：若第一轮勘察表明次级核启动或内存所有权无法在现有链路安全实现；明确 Zephyr 的任务、独占外设、消息大小、峰值吞吐与时延目标后；或验证表明同 SoC 隔离无法满足实际需求时。
