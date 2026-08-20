@@ -38,6 +38,7 @@
 
 - [EXP-20260817-001：盘点 R1 AMP 运行时前置条件](exp-20260817-001-inventory-r1-amp-runtime-prerequisites.md)
 - [EXP-20260819-002：从 R1 U-Boot 独立启动 Zephyr](exp-20260819-002-boot-zephyr-standalone-from-uboot.md)
+- [EXP-20260820-001：静态验证 R1 AMP DTS 的 CPU 与内存划分](exp-20260820-001-static-amp-dts-resource-partition.md)
 
 ### 阶段 0：镜像与恢复准备
 

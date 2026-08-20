@@ -3,7 +3,7 @@ title: "状态变更历史"
 type: status
 status: active
 created: 2026-08-05
-updated: 2026-08-19
+updated: 2026-08-20
 tags: [rk3588, progress, history]
 related:
   - "[[status/current]]"
@@ -402,3 +402,4 @@ related:
 | 2026-08-19（具体时间未记录） | 未知 | R1 MT7922 可用性 | 已购卡，插槽/链路/驱动状态未知 | PCIe 枚举通过；驱动支线暂缓 | MT7922 枚举为 `14c3:0616`，sysfs driver 为 `unbound`；当前 5.10.252 候选缺 `mt7921e` 源码和配置。学习者决定后续再处理，当前继续 AMP 主线。见[EXP-20260819-001](../experiment/exp-20260819-001-probe-r1-mt7922-pcie.md)。 | 学习者板端输出与用户决定 |
 | 2026-08-19T21:50:48+08:00 | 2026-08-19（具体时间未记录） | Zephyr A55 独立 RAM 启动 | 未验证 | verified（仅独立启动） | Zephyr v4.4.0 固件启用 EL2 D-cache/MMU 启动清理后，R1 U-Boot 以 `ext4load mmc 0:8 0x50000000` 加载并通过 `go 0x50000000` 成功输出 Zephyr banner 与 hello_world。没有并行启动 Linux，没有隔离 CPU/内存，也没有验证 IPC。见[EXP-20260819-002](../experiment/exp-20260819-002-boot-zephyr-standalone-from-uboot.md)。 | 学习者串口输出与本机产物核验 |
 | 2026-08-19T22:20:07+08:00 | 2026-08-19（具体时间未记录） | `rk-doc` GitHub 文档发布分支 | 误将本地 `master` 推为远端新分支；文档仍把当前项目发布分支写作 `master` | 已更正为 `main` | 从远端默认分支 `main` 安全承接文档提交，非强制推送后 `refs/heads/main` 为 `0b76bd3b2b0c1b1fe0c5020377a29f39a36491e8`，误建的远端 `master` 已删除；远端 `HEAD` 指向 `main`。发布使用 Git SSH 凭据，不要求 `gh`。根工作树因含学习者未提交内容仍保留在本地 `master`，未强制切换；见[软件环境基线](../environment/software.md)和[当前状态](current.md)。 | Agent 执行及 Git 远端引用核验 |
+| 2026-08-20T20:21:37+08:00 | 2026-08-20（具体时间未记录） | AMP 的 Linux CPU/内存静态资源划分 | Zephyr 仅能独立占用当前 CPU；候选 Linux DTB 仍声明 8 个 CPU，且未排除 Zephyr `0x50000000` 区域 | 已验证独立静态 DTS 变体 | `rk3588s-yyt-amp.dtb` 经 Kbuild 生成并反编译验证：不含 `cpu@300` 或 `core3`，PMU affinity 有 7 项，`zephyr@50000000` 为 1 MiB `no-map`；未启动 Linux/Zephyr AMP、未调用 SMC、未写 eMMC。见[EXP-20260820-001](../experiment/exp-20260820-001-static-amp-dts-resource-partition.md)。 | 学习者主机输出与本机源码检查 |
