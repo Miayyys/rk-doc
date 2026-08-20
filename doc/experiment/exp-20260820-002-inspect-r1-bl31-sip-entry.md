@@ -81,10 +81,28 @@ rockchip_plat_sip_handler
 | BL31/SiP 基础设施 | 存在 BL31 和 Rockchip SiP 分发线索 | 存在 `rockchip_sip_svc`、`rockchip_plat_sip_handler` 等字符串 | 通过 |
 | `RK_SIP_AMP_CFG` 支持 | 能定位 `0x82000022` 的处理证据 | 当前字符串检查未获得 | 待验证 |
 
+### 步骤 2：检查本机是否已有可比对的 TF-A/BL31 源码
+
+目的与预期结果：优先使用已下载资料定位实际固件的源码或 SiP 分发表，避免把 Linux 内核的 SMC 调用封装误认为 BL31 实现。
+
+```fish
+rg -l -i 'rockchip_plat_sip_handler|rockchip_sip_svc' \
+  ~/Study/rk3588/src ~/Study/rk3588/R1 \
+  --glob '*.{c,h,S}'
+
+rg --files ~/Study/rk3588/src ~/Study/rk3588/R1 | \
+  rg -i '/(arm-trusted-firmware|trusted-firmware-a|atf|bl31|plat/rockchip)/' | \
+  head -n 40
+```
+
+实际输出（学习者提供）：两条命令均无输出。
+
+观察：在当前本机 `src/` 与 `R1/` 范围内，未找到含这两个 BL31 handler 符号的源码，也未找到按 TF-A/BL31/`plat/rockchip` 命名可识别的源码路径。这不能证明 R1 固件不支持 AMP；它只排除了“本机已具备可直接核验的匹配固件源码”这一途径。
+
 ## 结论
 
-当前 R1 的 p1 启动载荷确实包含一个带 Rockchip SiP 服务分发器的 BL31。AMP 启动责任链并未因“完全没有 SiP”而立即排除，但 `RK_SIP_AMP_CFG` 的具体支持状态仍未知；不得仅凭通用 handler 名称向板端试探性调用 SMC。
+当前 R1 的 p1 启动载荷确实包含一个带 Rockchip SiP 服务分发器的 BL31。AMP 启动责任链并未因“完全没有 SiP”而立即排除，但 `RK_SIP_AMP_CFG` 的具体支持状态仍未知；当前本机也没有可直接核验的匹配 TF-A/BL31 源码。不得仅凭通用 handler 名称向板端试探性调用 SMC。
 
 ## 后续行动
 
-- [ ] 在主机已取得的源码/资料中定位与该 BL31 相匹配的 Rockchip SiP handler 或 `0x82000022` 分发表；若找不到，记录“本地无可验证源码”，再决定是否获取匹配 BSP/TF-A 源码。继续不调用 SMC、不加载 AMP DTB、不写 eMMC。
+- [ ] 只读列出已有 `src/rkbin` 的 BL31 二进制，并以 SHA-256 与实际 `r1-atf-1.bin` 比对；若存在精确相同载荷，可取得其文件名和 Git 来源线索。继续不调用 SMC、不加载 AMP DTB、不写 eMMC。
