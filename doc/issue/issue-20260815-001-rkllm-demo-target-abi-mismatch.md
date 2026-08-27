@@ -3,7 +3,7 @@ title: "ISSUE-20260815-001 RKLLM demo 目标用户空间 ABI 不匹配"
 type: issue
 status: resolved
 created: 2026-08-15
-updated: 2026-08-15
+updated: 2026-08-22
 tags: [rk3588, rkllm, cross-compile, abi, glibc]
 related:
   - "[[status/current]]"
@@ -47,7 +47,7 @@ R1 已验证为 GLIBC 2.35；此前只核对了 `librkllmrt.so` 的 ABI 需求�
 | 假设 | 依据 | 最小验证方法 | 结果 | 状态 |
 | --- | --- | --- | --- | --- |
 | H1：SDK Runtime 自身超过 R1 ABI | runtime 是新引入的专用库 | 读取其 `version-info` 并比较 R1 库版本 | Runtime 最高仅需 GLIBC 2.29 / GLIBCXX 3.4.26，R1 已满足 | 排除为当前直接失败点 |
-| H2：GCC 16 交叉编译出的 `llm_demo` 使用了比 R1 更新的用户空间 ABI | loader 错误直接点名 `./llm_demo` 所需 GLIBC 2.38 / GLIBCXX 3.4.32 | 以兼容目标 sysroot 或目标侧工具链重新构建并重试无参数启动 | 待验证 | 当前根因 |
+| H2：GCC 16 交叉编译出的 `llm_demo` 使用了比 R1 更新的用户空间 ABI | loader 错误直接点名 `./llm_demo` 所需 GLIBC 2.38 / GLIBCXX 3.4.32 | 以兼容目标 sysroot 或目标侧工具链重新构建并重试无参数启动 | R1 原生 `g++` 重建后越过 loader，进入 `main()` 并打印 Usage | 确认 |
 | H3：RKNPU 0.8.2 与 RKLLM Runtime 不兼容 | 驱动版本未有官方配对说明 | 需先越过 loader ABI 阻塞，再观察 `rkllm_init()` 行为 | 尚未达到该阶段 | 保留 |
 
 ## 根因

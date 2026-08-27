@@ -9,3 +9,6 @@
 - [DEC-20260807-001：采用 Obsidian 组织学习文档](dec-20260807-001-adopt-obsidian-vault.md)
 - [DEC-20260810-002：Linux+Zephyr AMP 长期学习方向](dec-20260810-002-linux-zephyr-amp-long-term-direction.md)
 - [DEC-20260813-003：NPU 上运行 LLM 作为项目核心](dec-20260813-003-npu-llm-required-project-core.md)
+- [DEC-20260821-004：AMP 原型保留 RKLLM CPU 逻辑编号](dec-20260821-004-preserve-rkllm-cpu-numbering-during-amp-prototype.md)
+- [DEC-20260826-001：选择 mailbox0 四通道作为 AMP 通知层](dec-20260826-001-select-mailbox0-notification-layer.md)
+- [DEC-20260827-001：将 AMP 主协议正式命名为 MailMsg](dec-20260827-001-name-mailmsg-amp-protocol.md)

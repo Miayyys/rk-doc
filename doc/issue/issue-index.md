@@ -17,6 +17,8 @@
 - [ISSUE-20260815-001：RKLLM demo 目标用户空间 ABI 不匹配](issue-20260815-001-rkllm-demo-target-abi-mismatch.md)
 - [ISSUE-20260815-002：RKLLM W8A8 矩阵乘法执行失败](issue-20260815-002-rkllm-w8a8-matmul-run-failed.md)
 - [ISSUE-20260816-001：候选内核 HDMI probe 空指针 Oops](issue-20260816-001-candidate-hdmi-null-dereference.md)
+- [ISSUE-20260820-001：resource DTB 覆盖 FIT AMP DTB](issue-20260820-001-resource-dtb-overrides-fit-dtb.md)
+- [ISSUE-20260821-001：RKLLM 在 7 CPU AMP 候选中的 CPU mask 不匹配](issue-20260821-001-rkllm-cpu-mask-after-amp-carveout.md)
 
 ## 已归档问题
 

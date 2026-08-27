@@ -1,0 +1,434 @@
+---
+title: "EXP-20260822-001 构建 R1 Linux-Zephyr 共享内存 PING 原型"
+type: experiment
+status: verified
+created: 2026-08-22
+updated: 2026-08-27
+tags: [rk3588, amp, zephyr, shared-memory, cache, psci]
+related:
+  - "[[experiment/exp-20260821-003-build-r1-psci-cpu-on-heartbeat]]"
+  - "[[experiment/exp-20260820-001-static-amp-dts-resource-partition]]"
+  - "[[status/current]]"
+---
+
+# EXP-20260822-001 构建 R1 Linux-Zephyr 共享内存 PING 原型
+
+## 目标
+
+在既有 Linux+Zephyr 单向共享页心跳基础上，构建一个不引入 RPMsg 的最小双向共享内存 PING/response 原型，并将 Linux 驱动、AMP DTB、Zephyr 固件和 RAM-only FIT 组合起来；记录其 RAM candidate 运行时回归及一次 RKLLM 同负载共存观察。
+
+## 环境与前置条件
+
+- 执行端：Arch Linux 主机构建；运行端：当前 RAM-only FIT candidate，未写启动分区或保存 U-Boot 环境。
+- Linux：Rockchip 5.10.252、RKNPU 0.9.8 R1 AMP 候选；Image 为 37,675,520 B。
+- Zephyr：`src/zephyr-amp-shmem-ping/`，入口固定为 `0x5000100c`，共享状态页基址为 `0x500ff000`。
+- 前置运行时边界：`EXP-20260821-003` 已验证 Linux 与 Zephyr 的单向 `HB` 心跳，但尚未验证双向消息。
+
+## 风险与恢复
+
+- 影响范围：仅生成主机 `build/local/r1-amp-shmem-ping/` 中的可再生内核、DTB、resource 和 FIT 候选。
+- 板端影响：仅使用 RAM-only FIT candidate 启动并进行运行时回归；未写 eMMC、U-Boot 环境或启动分区。
+- 恢复方法：不使用该候选即可继续原 eMMC 启动；主机候选可从构建目录重新生成。
+
+## 步骤与证据
+
+### 步骤 1：实现固定 cache-line 的 request/response 布局
+
+Linux 侧新增 `ping`/`response` sysfs 接口，Zephyr 侧使用 `src/zephyr-amp-shmem-ping/src/main.c` 的单槽轮询 responder。共享区域从 `0x500ff000` 起按独立 64 B cache line 划分：状态/检查点页之后依次为 request payload、request commit、response payload、response commit。payload 含 command、value、status、result；commit 含 `sequence` 与按位取反值，用于检测完整提交。
+
+Zephyr 对 request commit/payload 执行显式 cache invalidate，对 response payload/commit 执行显式 cache flush，并在各阶段使用 `dsb sy`。`PING` 命令返回成功状态和 `value + 1`；未知命令返回错误状态。源码的静态断言要求 payload 与 commit 均恰占一个 64 B cache line。
+
+这是主机源码审计与构建输入记录，不是 Linux↔Zephyr 板端通信证据。
+
+### 步骤 2：构建 Linux、AMP DTB 与 Zephyr
+
+主会话提供的主机构建结果如下：
+
+| 部件 | 实际结果 | 判定 |
+| --- | --- | --- |
+| Zephyr bin | 36,896 B（`0x9020`），entry `0x5000100c`，SHA-256 `86c483581eb15d67c4af597363163de72e6aadc93df36e433a3379fdd75a8801` | 通过（静态） |
+| AMP DTB | 233,743 B，SHA-256 `38146bf6c121dcfe0a86dcb00294e195c709d70f479b0976fde08c9dc66a3269` | 通过（静态） |
+| Linux Image | 37,675,520 B，SHA-256 `f050ddef09ef83f730ff5dcec50d2b5163cadbe3de77331399fd01c78c3211d2` | 通过（静态） |
+| DTS image-size | 已同步为 `0x9020` | 通过（静态） |
+
+编译通过只证明输入和输出可生成；没有证明 Linux 启动、Zephyr 执行或 PING 回应。
+
+### 步骤 3：重建并回读 RAM-only resource/FIT
+
+主机会将新 AMP DTB 放入 resource 的 `rk-kernel.dtb`，logo 继承原条目；resource 与 FIT 回读后以 `cmp` 核对通过。主会话提供的封装结果：
+
+| 部件 | 实际结果 | 判定 |
+| --- | --- | --- |
+| resource | SHA-256 `96d5e4c769bf4cd9e72d6c8aac9e9d20428d0c596f20395059dd738e924803c3` | 通过（主机回读） |
+| FIT | `build/local/r1-amp-shmem-ping/r1-boot-fit-amp-shmem-ping.img`，38,636,544 B，SHA-256 `382f8a927deae881de8bc9a5553917513ecfd095a3c642a25a6f6015fe18a0af` | 通过（主机回读） |
+| resource/FIT 内容 | `cmp` 回读通过；logo 与原 resource 一致；总大小小于 64 MiB | 通过（静态） |
+
+FIT 仍是 RAM-only 候选；本步骤只记录主机回读，后续步骤已单独记录该候选的启动、DTB 交接和 PING 运行时证据，未验证持久化启动路径。
+
+### 步骤 4：RAM-only FIT 启动与顺序 PING 回归
+
+目的与预期结果：在不写启动分区、不保存 U-Boot 环境的前提下，验证 resource-DTB 候选能进入 Linux，完整装载 Zephyr，并由 Linux 发出顺序 PING 后读回一致的 response。
+
+主会话确认的新 RAM-only FIT 已成功启动。板端运行时观察到：`nproc=7`，`zephyr` reserved 节点存在，驱动的 `image`/`ping`/`response`/`start`/`status` 接口均存在；Zephyr 映像完整装载为 `36896/36896`。一次 `start` 后串口出现 CPU3 normal-world 交接，随后状态为：
+
+```text
+affinity=off (1) cpu_on_attempted=1 cpu_on_ret=0 magic=0x48420001 current_el=4
+```
+
+Linux 写入 `41` 至 `ping`，等待 1 秒后读取：
+
+```text
+request_seq=1 response_seq=1 valid=1 command=1 value=41 status=0 result=42
+```
+
+随后状态页心跳为 `magic=0x48420066,current_el=4`。这些输出证明当前 RAM candidate 上标准 PSCI 启动的 Zephyr 已运行在 EL1，并完成一次 Linux→Zephyr→Linux 单槽 PING/response；request/response 的显式 cache maintenance 对该次交接可见。此处尚未覆盖异常恢复、并发/吞吐或长期稳定性，后续顺序请求见下文。
+
+在同一运行时实例中，Linux 随后顺序写入第二个请求 `100`，读取为：
+
+```text
+request_seq=2 response_seq=2 valid=1 command=1 value=100 status=0 result=101
+```
+
+这补充验证了同一实例内连续请求的序列推进和响应结果；它仍不是并发、吞吐、异常恢复或长期稳定性证据。
+
+### 步骤 5：RKLLM 同负载后的 PING 回环
+
+在同一 7 CPU RAM candidate 运行时实例中，运行 `llm_demo-amp`；其内部启用 CPU 为 `[3,4,5,6]`、count 为 `4`，输出 `rkllm init success`，对输入 `ok` 生成 `Alright,`。该过程无需重启 Zephyr。随后 Linux 写入 `7` 至 `ping`，读回：
+
+```text
+request_seq=3 response_seq=3 valid=1 command=1 value=7 status=0 result=8
+```
+
+此后状态为 `magic=0x4842052d current_el=4`。这验证了同一实例中一次 RKLLM 生成与后续一次 PING 回环共存；不代表压力、并发、长期稳定性或性能验证。
+
+同一运行时实例随后又完成五次顺序请求：
+
+```text
+request_seq=4 response_seq=4 valid=1 command=1 value=200 status=0 result=201
+request_seq=5 response_seq=5 valid=1 command=1 value=201 status=0 result=202
+request_seq=6 response_seq=6 valid=1 command=1 value=202 status=0 result=203
+request_seq=7 response_seq=7 valid=1 command=1 value=203 status=0 result=204
+request_seq=8 response_seq=8 valid=1 command=1 value=204 status=0 result=205
+```
+
+因此当前运行时证据累计为序列 `1`–`8` 的顺序 request/response；仍不扩大为并发、压力、吞吐、异常恢复或长期稳定性结论。
+
+### 步骤 6：mailbox0 controller 的 RAM-only probe
+
+目的与预期结果：在不接入 mailbox client/channel、不启动新的 Zephyr IPC 协议且不写启动分区的前提下，仅启用 AMP DTS 中的 RK3588 `mailbox0` controller，确认 Linux platform driver 能绑定。
+
+主机生成了新的 RAM-only FIT 候选 `build/local/r1-amp-mailbox-probe/r1-boot-fit-amp-mailbox-probe.img`。该候选使用启用 `mailbox0` 的 DTB，resource 中的 `rk-kernel.dtb` 已解包后与输入 `cmp` 一致，DTB 中 `/mailbox@fec60000/status` 为 `okay`。候选大小为 38,636,300 B，SHA-256 为：
+
+```text
+38313e25c788ae9454105caca9dfe910b9f2c374de7da23f88594593693c5e22
+```
+
+候选通过 SSH 传至板端 `/userdata/r1-mailbox-probe.img`，板端 SHA-256 与主机一致。U-Boot 仅从 `mmc 0:8` 的 userdata 读取该文件并 RAM 启动，未写 eMMC 启动分区或保存 U-Boot 环境。
+
+板端运行时验证结果：
+
+```text
+/sys/bus/platform/devices/fec60000.mailbox
+/sys/bus/platform/drivers/rockchip-mailbox
+okay
+```
+
+其中第一行是设备目录存在，第二行是 `readlink -f` 得到的 driver 路径，第三行是运行时 `/proc/device-tree/mailbox@fec60000/status`。此前 `dmesg | grep "mailbox"` 无输出；该现象不能否定 probe，sysfs 绑定和运行时 DTB 才是本次判断依据。
+
+本步骤只证明 `mailbox0` controller 已由 Linux 的 `rockchip-mailbox` 驱动绑定；尚未验证 mailbox client、具体 TX/RX channel、Zephyr mailbox ISR、Linux↔Zephyr doorbell 或 RPMsg/virtio。
+
+### 步骤 7：静态接入 mailbox client 的 DT wiring
+
+在同一 AMP DTS 的 `amp-cpu-on-heartbeat` 节点中加入 mailbox client 描述：
+
+```dts
+mbox-names = "amp-rx", "amp-tx";
+mboxes = <&mailbox0 0>, <&mailbox0 3>;
+```
+
+主机使用已有 kernel `.config` 编译 `rockchip/rk3588s-yyt-amp.dtb` 成功。对编译产物执行 `fdtget` 得到：
+
+```text
+amp-rx amp-tx
+1a3 0 1a3 3
+```
+
+这表示两个 client 引用都指向同一个 `mailbox0` phandle（编译后的值为 `0x1a3`），接收通道为 0、发送通道为 3。该 DTB 仅完成主机侧静态 wiring 验证，尚未重新打包 resource/FIT 或在板端启动；Linux AMP 驱动也尚未调用 `mbox_request_channel_byname()`，因此不能据此宣称 channel 已申请或消息已发送。
+
+### 步骤 8：审计 mailbox IRQ 的方向与候选 Zephyr 路由
+
+主会话确认 `mailbox0` DTS 的四个 Linux IRQ 声明为 `GIC_SPI 61`–`64`。GIC SPI 在 raw INTID 上加 32，故其 raw GIC INTID 为 93–96；板端 `/proc/interrupts` 也将 `fec60000.mailbox` 显示在 93–96。
+
+对 Linux `drivers/mailbox/rockchip-mailbox.c` 的源码审计表明：Linux TX 路径写入 A2B 的 CMD/DAT，而 Linux IRQ handler 读取并清除 B2A。因此，Linux 可见的 93–96 是“对端→Linux”的中断，不是“Linux 通过 TX3→Zephyr”的中断。这纠正了把 controller IRQ 与 Linux TX 通道混为同一对象的假设。
+
+资料/源码对照还发现官方 `rk3588-amp.dtsi` 同时引用 `mailbox0` 通道 0/3，并以 `amp-irqs` 将 raw GIC INTID 100 路由到 CPU3。当前 DTS 与所审计源码没有直接证明 TX3 对应 INTID 100；这只是下一轮 Zephyr ISR/GIC route 验证的候选，不能作为连接结论。
+
+因此验证次序固定为：先让 Zephyr **不依赖中断**、被动轮询 A2B 的状态/command/data，确认 Linux TX3 的实际写入能到达；该观察已在步骤 9 完成。下一步才单独启用并验证 Zephyr 的 GIC route/ISR；步骤 8 本身没有验证 Zephyr ISR、doorbell 或 RPMsg。
+
+### 步骤 9：RAM-only mailbox A2B 只读观察
+
+目的与预期结果：在 RAM-only mailbox probe 实例中，由 Linux 通过 TX3 写入 A2B 后，让 Zephyr CPU3 以只读 MMIO 映射被动观察同一组寄存器；预期两侧在同一时点读到一致的 status/command/data。此步骤不依赖 Zephyr ISR，也不发送 B2A 响应。
+
+主会话确认的运行时观察结果如下：Linux TX3 返回 `mailbox_tx_ret=0`，Linux TX 快照为 `A2B status=0/cmd=1/data=41`；同一时点 Zephyr CPU3 观察到 `mbox_observation marker=0x4d424f58, status=0, cmd=1, data=41`。
+
+该结果证明 A2B 寄存器可见性/路径已验证。它没有验证 Zephyr ISR、中断路由、B2A/Linux RX，也没有验证 RPMsg。
+
+### 步骤 10：CPU3 GIC SPI100 状态观察
+
+目的与预期结果：在 CPU3 执行 `irq_enable(100)` 后，只读观察 Zephyr 侧 GIC 状态，并在一次 Linux TX3 ping 后检查是否出现 mailbox 中断状态；该步骤用于验证候选 SPI100 是否已启用并路由到 CPU3，不据此推断 TX3 的替代中断号。
+
+主会话确认的 Zephyr 共享观察为：`GICE 0x47494345/0x8fc00211/0x0/0x300`。其中 SPI100 的 enable word 含 bit4，pending word 为 `0`，IROUTER low 为 `0x300`。一次 Linux TX3 ping 后仍未出现 MISR，因此候选 IRQ100 对该 TX3 事件未触发。
+
+第二次观察结果变为零的直接原因已确认：Linux ping 实现按设计会先清空观察区；不能把该零值解释为 CPU3 未执行或状态丢失。
+
+本步骤排除了“IRQ100 未启用/未路由”这一假设，但没有证明 IRQ100 是 TX3 事件对应的中断，也没有指定任何替代 INTID。A2B ISR/doorbell 仍未验证。
+
+### 步骤 11：v2 标准 SPI pending 只读扫描
+
+目的与预期结果：在 Linux TX3 PING 前后，只读扫描 Zephyr GICD_ISPENDR 的标准 SPI INTID32–511窗口，比较基线与差分；同时保留 A2B 观察值，用于确认寄存器写入与 pending 扫描结果的边界。
+
+主会话确认的 v2 扫描结果为：标准 SPI INTID32–511 返回 `PN00 0x504e3030/0/0/0`，基线与差分均为零。同一状态下 A2B 观察为 `a2b_at_tx/a2b_now=0/1/0x29`，表明寄存器写入保留，但本扫描窗口未见新增标准 SPI pending。
+
+本步骤结论严格限于“未观测到标准 SPI pending 差分”。这不等同于绝对没有中断，也不否定其他通知路径；A2B ISR/doorbell 仍未验证。
+
+### 步骤 12：A2B_INTEN 只读观察
+
+目的与预期结果：只读观察 A2B_INTEN、A2B_STATUS 以及 TX3 对应的 CMD3/DAT3，比较 Linux TX3 PING 前后的门控与寄存器状态；该步骤用于判断“通知 gate 未打开”是否足以解释未见 pending，不修改寄存器。
+
+主会话确认的结果为：启动时 `A2BI=0x41324249/0/0/0`；一次 Linux TX3 ping 后为 `A2BP=0x41324250/0/0/1`，Linux 同一状态的 A2B 观察为 `a2b_now=0/1/0x29`。因此可明确记录：`A2B_INTEN=0`、`A2B_STATUS=0`、`CMD3=1`、`DAT3=0x29`。
+
+该结果支持“gate 未打开可能解释无 pending”的假设；尚未验证设置 bit3 的语义，也未验证 A2B ISR。
+
+### 步骤 13：A2B gate enable 只读回读
+
+目的与预期结果：在只读观察流程中启用 A2B gate bit3，再比较 Linux TX3 PING 前后的 A2B_INTEN、A2B_STATUS、CMD3/DAT3 和候选 IRQ100 状态；不据此推断具体替代通知线路。
+
+主会话确认的结果为：启动时 `A2BE=0x41324245/0/0x8/0`；PING 后 `A2BP=0x41324250/0x8/0x8/0x1`，Linux 同时观察到 `a2b_at_tx/a2b_now=0x8/0x1/0x29`。
+
+这证明 bit3 写入可以回读，并使 A2B_STATUS bit3 置位。候选 IRQ100 ISR 仍未命中；不能据此断言任何具体替代线路。
+
+### 步骤 14：gate-open GIC pending 只读扫描
+
+目的与预期结果：在 gate-open pending scan candidate 上执行一次 Linux TX3 PING，比较 raw GIC INTID100 的 pending 基线与差分；只读观察 GIC pending，不据此宣称 Zephyr ISR 已执行。
+
+主会话确认的板端结果为：Linux PING `41` 得到 response `42`；A2B 状态为 `a2b_at_tx/a2b_now=0x8/0x1/0x29`，Zephyr 共享观察为 `mbox_observation=0x50454e44/0x64/0x0/0x10`。
+
+`MARK PEND` 记录表明 raw GIC INTID 100 的 pending 基线由 `0` 变为 `0x10`（word3 bit4）。这直接证实 Linux TX3 经 A2B channel 3 gate 产生标准 GIC SPI100 pending。该结果不证明 Zephyr ISR 已触发，也不表示完整 doorbell 已完成。
+
+### 步骤 15：one-shot Zephyr IRQ100 ISR 接收
+
+目的与预期结果：在 gate-open candidate 上受控接收一次 IRQ100，确认 Zephyr ISR 是否读取到 Linux TX3 经 A2B channel 3 gate 产生的事件；该步骤不验证 B2A 或全双工。
+
+主会话确认的板端结果为：one-shot IRQ candidate 在 Linux PING `41` 后 response `result=42`；状态为 `a2b_at_tx/a2b_now=0x8/0x1/0x29`，Zephyr 观察为 `mbox_observation=0x4d495352/0x8/0x1/0x29`（`MISR`），heartbeat 继续到 `5`。Zephyr IRQ100 ISR 实际触发，读取到 A2B status bit3、`CMD3=1`、`DAT3=41`。
+
+ISR 按 one-shot 设计自行 mask，且未确认/ack mailbox。该结果验证 Linux→Zephyr doorbell（mailbox0 A2B ch3 gate→GIC100）；不宣称 B2A 或 full duplex 已验证。
+
+### 步骤 16：B2A one-shot reverse notification
+
+目的与预期结果：在 B2A one-shot candidate 上确认 Zephyr B2A channel 0 写入是否到达 Linux `amp-rx` callback，并保留启动前后计数与 A2B/Zephyr 状态；不把未记录的 IRQ93 计数扩大为本次实测证据。
+
+板端启动前状态为 `image=0, mailbox_rx_count=0`。Zephyr start 并由 Linux PING `41` 后，response 为 `seq=1 valid=1 result=42`；状态为 `mailbox_rx_count=1 mailbox_tx_count=1 mailbox_tx_ret=0 a2b_at_tx/a2b_now=0x8/0x1/0x29 mbox_observation=0x4d495352/0x8/0x1/0x29 magic=HB5 current_el=4`。
+
+`mailbox_rx_count` 从 `0` 到 `1` 证明 Zephyr B2A channel 0 write 到达 Linux `amp-rx` callback；与已验证的 A2B 方向共同形成双向 doorbell 原型。本次未提供或记录 IRQ93 前后计数，不能宣称该单独证据。Linux mailbox driver ack 语义来自源码，实际寄存器清零未直接读取。
+
+### 步骤 18：U-Boot mailbox controller 只读访问矩阵
+
+主会话确认的 U-Boot 只读访问结果为：mailbox0（TRM 对应 `MCU_PMU`）可读，读取窗口返回全 0；mailbox1（对应 `MCU_DDR`）读取异常；mailbox2（对应 `MCU_NPU`）可读，读取窗口返回全 0。全 0 只能说明本次读取窗口的观察值，不能推出 controller 永远空闲；mailbox2 已完成本次用户态读取，后续不再盲读。
+
+该访问矩阵与 Linux probe 结果不能直接等同：U-Boot 阶段访问条件不同，不能据此指定 mailbox1 异常的唯一根因，也不能断言 mailbox1 安全闲置或 DDR 固件未使用。
+
+### 步骤 19：mailbox1 Linux RAM-only probe
+
+独立 RAM-only candidate 仅启用 mailbox1（`mailbox@fec70000`），mailbox0/2 disabled，未加入 mailbox client、Zephyr 或 CPU3 carveout。外置 FIT 载荷布局的候选启动成功；旧的内嵌 data FIT 被厂商 `bootm` 拒绝，仅为封装兼容问题，未进入 Linux。
+
+候选 Linux 中确认 `/sys/bus/platform/devices/fec70000.mailbox` 存在，driver realpath 为 `/sys/bus/platform/drivers/rockchip-mailbox`。这验证 Linux 可正常 probe 并访问 mailbox1；结合驱动源码，probe 会启用 PCLK 并注册 IRQ。U-Boot 读取异常的解释仅限于“启动阶段/访问条件不同”，不能归结为 PCLK 唯一根因。
+
+候选 Linux 的 `grep 'fec70000.mailbox' /proc/interrupts` 显示 GICv3 raw `101,102,103,104` 共四行，所有 CPU 计数均为 `0`。这证明 Linux driver 已注册 mailbox1 的四个 B2A IRQ，且本实验未产生事件；不能据此称固件未使用 mailbox1。
+
+### 步骤 17：连续三轮双向序号验证
+
+主会话确认连续完成三轮单槽 request/response 与 B2A callback 序号对应：
+
+| 轮次 | request/response | Linux callback |
+| --- | --- | --- |
+| 1 | `seq=1 value=41 result=42` | `rx_count=1 rx_last=0xb2a00001/0x1` |
+| 2 | `seq=2 value=100 result=101` | `rx_count=2 rx_last=0xb2a00001/0x2` |
+| 3 | `seq=3 value=7 result=8` | `rx_count=3 rx_last=0xb2a00001/0x3` |
+
+第 2/3 轮 Zephyr observation 分别为 `B2AT/0x1/0xb2a00001/0x2` 与 `B2AT/0x1/0xb2a00001/0x3`，heartbeat 分别到 `HB8`、`HB10`；A2B snapshots 保持 `0x8/0x1/0x29`。因此共享响应序号、B2A ACK 序号和 Linux callback 计数一一对应。
+
+本验证仍是单槽、手动 sleep/response polling，不是并发、压力或超时证明。另更正返回值解释：`mbox_send_message` 返回非负 cookie（如 `0/1/2`）表示成功提交，负数才表示失败；之前不能把非零正值表述为错误。
+
+### 步骤 20：mailbox1-only Linux 与 LLM 共存回归
+
+在 mailbox1-only RAM candidate（Linux 已绑定 `fec70000.mailbox`）上，用户运行已验证的 `llm_demo-amp`，对 `ok` 得到 `Alright` 生成；随后同一 candidate 上重复运行多次均正常，后续运行速度快于第一次，但未记录精确次数或性能数值。
+
+该结果限定为当前 R1、RKNPU 0.9.8、指定 RKLLM 模型下 mailbox1 controller bind 与一次/多次实际 NPU 推理共存；不覆盖 DDR DFS、休眠、长期压力，也不证明 mailbox1 可自由占用或解释后续运行更快的原因。
+
+### 步骤 21：all-mailbox Linux bind 与 LLM 共存
+
+RAM-only all-mailbox candidate 中 mailbox0/1/2 均为 `status=okay`，无 mailbox client、Zephyr 或 CPU3 carveout，成功进入 Linux。用户确认 `fec60000.mailbox`、`fec70000.mailbox`、`fece0000.mailbox` 三个设备的 driver 均为 `/sys/bus/platform/drivers/rockchip-mailbox`；其上 `llm_demo-amp` 多次推理正常。
+
+这验证三 controller 同时 Linux bind 与当前 RKNPU/RKLLM 工作负载多次共存；不包括 mailbox1/2 主动消息、固件所有权、低功耗/DFS、长期压力验证，也不授权最终占用。后续架构原则可记录为：共享内存协议与 doorbell 后端分层，controller/channel 由 DTS 配置；该原则不是已实现代码的描述。
+
+### 步骤 22：mailbox0 四通道矩阵单次双向闭环
+
+2026-08-26，R1 RAM-only matrix candidate 在不修改 eMMC 的前提下，对 mailbox0 的四个逻辑通道分别完成一次 Linux→CPU3→Linux 闭环。Linux 发送与 CPU3 回执的共享观察为：ch0 `rx=1 0xb2a00000/0x28 tx=1/0`；ch1 `rx=1 0xb2a00001/0x2a tx=1/0`；ch2 `rx=1 0xb2a00002/0x2b tx=1/0`；ch3 `rx=1 0xb2a00003/0x29 tx=1/0`。CPU3 observation 为 `0x4d345249`（`M4RI`），`a2b_now=0xf`。
+
+该结果验证候选 SPI97–100 路由至 CPU3，以及四个逻辑通道各自独立的 A2B/B2A 闭环。未验证 A2B_STATUS 远端确认/清除语义；本轮 Zephyr 刻意不写 A2B_STATUS，并在每次 IRQ 触发后 one-shot 屏蔽，因此最终 `a2b_now=0xf` 只记录本轮观察状态，不能推出持久化或清除语义。
+
+### 步骤 24：mailbox0 ch3 连续两轮通信
+
+2026-08-26，修正测试客户端 `knows_txdone=false` 后，在当前 RAM candidate 上 mailbox0 ch3 完成连续两次 Linux→CPU3→Linux 通信。第二轮板端状态为：`ch3=rx:2/0xb2a00003/0x2a,tx:2/1 ... a2b_now=0x0/0xa2b00003/0x2a mbox_observation=0x41434b43/0x8/0x0/0x8`。两轮最终 `a2b_now=0x0`，均观察到 pending 清零；其中 `tx` 的非负值 `1` 是 mailbox 队列 cookie，表示成功提交，不是错误码。
+
+该结果仅验证当前 RAM candidate 上同一 mailbox0 ch3 的连续两次 Linux→CPU3→Linux 闭环及每轮最终 pending 为 0；未验证四通道重复、并发通信或 mailbox1/2 写入行为。
+
+### 步骤 25：mailbox0 ch0–ch2 回执与清 pending
+
+同一 2026-08-26 可重复 RAM candidate 上，mailbox0 ch0/ch1/ch2 均完成发送、CPU3 回执并清 pending。板端状态为：`ch0=rx:1/0xb2a00000/0xa,tx:1/0`，`ch1=rx:1/0xb2a00001/0xb,tx:1/0`，`ch2=rx:1/0xb2a00002/0xc,tx:1/0`，并保留 ch3 `rx:2/0xb2a00003/0x2a,tx:2/1`；`a2b_now=0x0/...`，`mbox_observation=0x41434b43/0x4/0x0/0x4`。按 ACKC 探针定义，字段为写前 `A2B_STATUS=0x4`、写后回读 `0x0`、写入掩码 `0x4`，直接对应 ch2。
+
+结合此前 ch3 的 ACKC `0x8/0x0/0x8`，目前至少 ch2/ch3 的 A2B_STATUS 清除已有直接观测；四个逻辑通道的独立闭环可复用，但本次不构成并发、高吞吐或 mailbox1/2 验证。
+
+### 步骤 23：A2B_STATUS ch3 clear probe
+
+在同一 R1 RK3588 mailbox0 ch3、当前 RAM candidate 上，Linux 发送 ch3 后，板端状态为：`ch3=rx:1/0xb2a00003/0x29,tx:1/0 ... a2b_now=0x0/0xa2b00003/0x29 mbox_observation=0x41434b43/0x8/0x0/0x8`。其中 `0x41434b43` 为 `ACKC`；按该探针定义，观测字段依次为写前 `A2B_STATUS=0x8`、写后回读 `0x0`、写入掩码 `0x8`。
+
+直接实验依据表明：在本板 RK3588 mailbox0 ch3、当前 RAM candidate 上，CPU3 向 A2B_STATUS 写 `BIT(3)` 清除了对应 pending 位。尚未验证连续重复门铃、全通道或其他 controller 的清除行为，不能将该结果泛化。
+
+### 步骤 26：12 控制器候选的 mailbox1 ch0 请求
+
+目的与预期结果：在不改变持久化启动介质的前提下，检查 12 控制器候选是否能为 mailbox1 ch0 建立请求路径；若访问触发异常，立即停止该候选，不将其作为通知层。
+
+主会话确认的运行时结果为：mailbox1 ch0 request 在 `rockchip_mbox_startup` 发生 synchronous external abort。该候选因此停止，不继续探索 mailbox1/2，也不把该次异常解释为唯一硬件根因或推广到其他控制器。
+
+本步骤属于 RAM-only 候选边界；没有改变 eMMC、U-Boot 环境或持久化启动配置。
+
+### 步骤 27：mailbox0 四通道版本与协议 groundwork 主机构建
+
+主机侧当前内核/Zephyr mailbox0 四通道版本已编译成功。新建协议 groundwork（`src/amp-protocol/r1_amp_protocol.h/.c`）仅通过主机 C 单元测试；这只说明主机测试输入可编译并通过测试，不代表 Linux↔CPU3 集成、RAM-only FIT 运行或板端 mailbox 通信已经验证。
+
+### 步骤 28：mailbox0 ch0 RAM-only 基线回归
+
+目的与预期结果：在不改动持久化启动介质的前提下，使用当前 mailbox0 四通道基线候选启动 Linux，加载 Zephyr mailbox0 基线固件，并仅回归 ch0 的一次 doorbell/回执路径。
+
+主会话确认的新候选 `r1-boot-fit.img` 已传至板端，SHA-256 前缀为 `85383311…`。启动后运行时为 Linux `5.10.252`、`nproc=7`，`zephyr` carveout 存在。加载 `36,912 B` 的 `zephyr-mbox0-baseline.bin` 后，PSCI `CPU_ON` 返回 `0`；Zephyr 观察到 `current_el=4` 和 heartbeat。
+
+执行 doorbell `0 41` 后，ch0 状态为：`m0c0=rx:1/0xb2a00000/0x29,tx:1/0`，`a2b_now=m0:0`。本次仅验证 ch0 基线回归，不是新协议集成，也不代表本轮已完成四通道全测。
+
+### 步骤 29：RAM-only MailMsg V1 最小闭环
+
+目的与预期结果：在不改动 eMMC 的前提下，启动 MailMsg V1 候选，加载 Zephyr 固件，并验证一次共享内存队列消息经 mailbox0 ch0 通知后返回 PONG。
+
+主会话确认候选 FIT 为 `build/local/r1-mailmsg-v1/r1-boot-fit-mailmsg-v1-external.img`，SHA-256 为 `e7c73a7d3628654badbd3a98559307f32325519043049a32d2abd39d19070400`；Zephyr `/userdata/zephyr-test/mailmsg-v1.bin` SHA-256 为 `a2b386ebda0493c7aa72f7a7f07156af0872e51ee9874db2cb365a57ec9ebf46`。启动后 Linux 为 `5.10.252`、`nproc=7`；CPU3 PSCI `CPU_ON ret=0`，Zephyr `current_el=4`。
+
+Linux `mailmsg_ping` 写入 priority `0`、value `41`；`mailmsg_response` 返回 `priority=0 valid=1 type=2 sequence=1 value=42`。状态为 `m0c0=rx:1/0xb2a10000/0x0,tx:1/0`、`a2b_now=m0:0x0`。
+
+本步骤仅证明一次共享内存 MailMsg 队列与 mailbox0 ch0 通知的 PING/PONG；未验证优先级 1–3、负载/并发、大数据、可靠性或持久化 eMMC。
+
+### 步骤 30：MailMsg V1 连续四优先级消息
+
+同一 2026-08-27 RAM-only MailMsg V1 session 中，连续写入 priority/value `0/10`、`1/20`、`2/30`、`3/40`。`mailmsg_response` 依次返回 `p0 seq2 val11`、`p1 seq3 val21`、`p2 seq4 val31`、`p3 seq5 val41`，均为 `type=2 valid=1`。
+
+对应状态为：`m0c0 rx2 cmd 0xb2a10000 data0 tx2/1`；`m0c1 rx1 0xb2a10001 data1 tx1/0`；`m0c2 rx1 0xb2a10002 data2 tx1/0`；`m0c3 rx1 0xb2a10003 data3 tx1/0`；`a2b_now=m0:0`。
+
+该结果证明四 priority 的独立映射和一次连续四消息的正确 PING/PONG；不证明抢占调度、并发/高负载、队列满策略、长期稳定或大数据。
+
+### 步骤 31：RAM-only MailMsg V2 ch0 正常路径
+
+目的与预期结果：在不改变持久化启动介质的前提下，验证 V2 固定帧及 CRC32 的板端正常路径，经 mailbox0 ch0 完成一次共享内存 PING/PONG。
+
+前一次 V2 候选使用旧的 `36,912 B` DTS sysfs loader size 上限，写入时出现 `cat: File too large`，固件被截断；该次结果无效，不作为 V2 运行证据。修正 DTS sysfs loader size，从 `0x9030` 更新为 `0xa030` 后重新验证。
+
+修正后的运行结果为：Zephyr image 完整写入，`image=41008/41008`；PSCI `CPU_ON ret=0`。Linux priority `0`、value `41` 后，`mailmsg_response` 返回 `type=2 seq=1 value=42`；状态为 `m0c0 rx 0xb2a10000/0x0, tx 1/0`，pending 为 `0`。
+
+本步骤仅验证 CRC32 V2 的板端正常路径（一次 ch0 PING/PONG）。payload 篡改后的拒收仍只有通用 host C unit test 证据；本步骤不证明板端篡改拒收、故障恢复、其他 priority、并发、压力或长期稳定性。
+
+## 结果对照
+
+| 检查项 | 预期 | 实际 | 判定 |
+| --- | --- | --- | --- |
+| 共享内存协议布局 | request/response 各由独立 64 B cache line 承载 | Zephyr 源码静态断言和固定地址布局满足 | 通过（静态） |
+| 双方 cache maintenance | Linux/Zephyr 对交接数据显式维护 cache | Zephyr 端 invalidate/flush 与 `dsb sy` 已构建；Linux 端已编入 ping/response 接口 | 通过（主机静态） |
+| Linux Image、AMP DTB、Zephyr | 可生成且 DTS image-size 与 bin 一致 | 三项构建通过，Zephyr `0x9020` 与 DTS 同步 | 通过（静态） |
+| resource/FIT 封装 | resource 条目、logo、FIT 回读一致且小于 64 MiB | `cmp` 通过，FIT 38,636,544 B | 通过（静态） |
+| RAM 启动与 Linux 侧接口 | 候选进入 Linux，sysfs ping/response 可用 | `nproc=7`、reserved 节点存在，五个接口均存在，image `36896/36896` | 通过（运行时） |
+| PSCI 与 Zephyr 执行 | 一次 `start` 后 CPU3 交接并到达 EL1 | `cpu_on_ret=0`、`magic=0x48420001`、`current_el=4` | 通过（运行时） |
+| Linux→Zephyr→Linux PING | 顺序请求均得到 response，序列和结果可回读 | `request_seq=1`–`8` 均 `valid=1`；值与结果依次为 `41→42`、`100→101`、`7→8`、`200→201`、`201→202`、`202→203`、`203→204`、`204→205` | 通过（八次顺序运行时） |
+| RKLLM + PING 同负载共存 | RKLLM 生成后无需重启 Zephyr 即可完成 PING 回环 | `llm_demo-amp` 启用 CPU `[3,4,5,6]`、count `4`，`rkllm init success`，`ok` 输出 `Alright,`；随后 `request_seq=3 ... value=7 ... result=8`，状态 `magic=0x4842052d current_el=4` | 通过（一次同负载回归） |
+| mailbox0 controller 绑定 | 新 DTB 启用 mailbox0 后 Linux platform driver 绑定 | 设备 `/sys/bus/platform/devices/fec60000.mailbox` 存在，driver 为 `/sys/bus/platform/drivers/rockchip-mailbox`，运行时 status 为 `okay`；FIT SHA-256 与板端一致 | 通过（RAM-only controller probe） |
+| mailbox client DT wiring | 编译产物包含 RX/TX 名称和 mailbox 通道引用 | `fdtget` 输出 `amp-rx amp-tx` 与 `1a3 0 1a3 3`；尚未进入 resource/FIT 或板端运行时 | 通过（静态） |
+| mailbox IRQ 方向 | 区分 Linux controller IRQ 与 Linux TX 通道 | DTS `GIC_SPI 61`–`64` 对应 raw INTID 93–96，`/proc/interrupts` 显示同一范围；Rockchip mailbox 源码显示 Linux IRQ 接收/清除 B2A，Linux TX 写 A2B CMD/DAT | 通过（源码与板端对照） |
+| TX3 与 Zephyr IRQ 的对应 | 找到可验证候选但不提前等同 | 官方 AMP DTS 使用 mailbox0 0/3 并路由 raw INTID100 至 CPU3；没有直接 TX3=100 证据 | 待验证 |
+| Linux TX3→Zephyr CPU3 A2B 可见性 | Zephyr 被动观察到 Linux TX3 的写入 | Linux `mailbox_tx_ret=0`；Linux 读到 `A2B status=0/cmd=1/data=41`，同一时点 Zephyr 读到 `marker=0x4d424f58, status=0, cmd=1, data=41` | 通过（RAM-only 只读 MMIO 观察） |
+| CPU3 GIC SPI100 状态 | 确认候选 IRQ100 的 enable、pending 和路由状态 | `GICE 0x47494345/0x8fc00211/0x0/0x300`；enable word 含 bit4、pending word 为 `0`、IROUTER low 为 `0x300`；Linux TX3 ping 后无 MISR | 通过（排除未启用/未路由）；TX3 对应关系待验证 |
+| v2 标准 SPI pending 扫描 | 比较 Linux TX3 PING 前后的 GICD_ISPENDR 标准窗口 | INTID32–511 返回 `PN00 0x504e3030/0/0/0`，基线/差分均为零；同时 `a2b_at_tx/a2b_now=0/1/0x29` | 未观测到标准 SPI pending 差分 |
+| A2B_INTEN 只读观察 | 比较门控、状态和 TX3 寄存器 | 启动 `A2BI=0x41324249/0/0/0`；TX3 ping 后 `A2BP=0x41324250/0/0/1`，Linux `a2b_now=0/1/0x29`；即 `A2B_INTEN=0`、`A2B_STATUS=0`、`CMD3=1`、`DAT3=0x29` | 支持 gate 未打开可能解释无 pending；bit3 语义/ISR 待验证 |
+| A2B gate enable 只读回读 | 验证 bit3 写入、状态置位及 TX3 观察 | 启动 `A2BE=0x41324245/0/0x8/0`；PING 后 `A2BP=0x41324250/0x8/0x8/0x1`，Linux `a2b_at_tx/a2b_now=0x8/0x1/0x29` | bit3 可回读并使 A2B_STATUS bit3 置位；IRQ100 ISR 未命中 |
+| gate-open GIC pending 扫描 | 比较 Linux TX3 PING 前后的 raw GIC INTID100 pending | PING `41`→`42`；`a2b_at_tx/a2b_now=0x8/0x1/0x29`；`mbox_observation=0x50454e44/0x64/0x0/0x10`；pending 基线 `0`→`0x10`（word3 bit4） | 通过（确认 A2B ch3 gate 产生 SPI100 pending）；ISR/完整 doorbell 待验证 |
+| one-shot Zephyr IRQ100 ISR 接收 | 受控接收一次 A2B ch3 gate 事件 | PING `41`→`result=42`；`a2b_at_tx/a2b_now=0x8/0x1/0x29`；`mbox_observation=0x4d495352/0x8/0x1/0x29`（MISR）；heartbeat 到 `5`；ISR 读到 status bit3、`CMD3=1`、`DAT3=41` | 通过（Linux→Zephyr doorbell）；ISR 自行 mask、未 ack；B2A/full duplex 待验证 |
+| B2A one-shot reverse notification | Zephyr B2A ch0 write 到达 Linux amp-rx callback | 启动前 `image=0, mailbox_rx_count=0`；PING 后 `seq=1 valid=1 result=42`，`mailbox_rx_count=1 mailbox_tx_count=1 mailbox_tx_ret=0`，`a2b_at_tx/a2b_now=0x8/0x1/0x29`，`mbox_observation=0x4d495352/0x8/0x1/0x29`，`magic=HB5 current_el=4` | 通过（B2A callback 计数0→1）；IRQ93 计数及实际寄存器清零未直接验证 |
+| U-Boot mailbox 只读访问矩阵 | 比较 mailbox0/1/2 访问条件与观察值 | mailbox0→MCU_PMU 可读全0；mailbox1→MCU_DDR 读异常；mailbox2→MCU_NPU 可读全0 | 通过（只记录本次窗口）；不推出永久空闲或唯一根因 |
+| mailbox1 Linux RAM-only probe | mailbox1 启用后 Linux platform driver probe | `/sys/bus/platform/devices/fec70000.mailbox` 存在，driver `/sys/bus/platform/drivers/rockchip-mailbox`；外置 FIT 启动成功，旧内嵌 data FIT 仅被 bootm 拒绝 | 通过（Linux probe/PCLK/IRQ 注册由源码支持）；U-Boot 异常原因未唯一确定 |
+| mailbox1 B2A IRQ 注册 | Linux 暴露 mailbox1 的四个 B2A IRQ | `/proc/interrupts` 显示 GICv3 raw `101,102,103,104` 四行，所有 CPU 计数为 `0` | 通过（已注册且本实验无事件）；不推出固件未使用 |
+| mailbox1-only LLM 共存 | mailbox1 bind candidate 上运行 NPU LLM | `llm_demo-amp` 对 `ok` 生成 `Alright`；随后多次重复回归正常，后续运行更快但无精确次数/数值 | 通过（当前 candidate 共存）；不代表 DFS/休眠/长期压力或最终占用 |
+| all-mailbox Linux bind 与 LLM | 三 controller 同时 bind 后运行 LLM | `fec60000/fec70000/fece0000.mailbox` driver 均为 `rockchip-mailbox`；`llm_demo-amp` 多次推理正常 | 通过（当前工作负载多次共存）；不验证主动消息、固件所有权、低功耗/DFS/长期压力 |
+| 连续三轮双向序号 | request/response、B2A ACK 和 callback 计数连续对应 | `1: 41→42, rx=1, rx_last=.../0x1`；`2: 100→101, rx=2, rx_last=.../0x2`；`3: 7→8, rx=3, rx_last=.../0x3`；观察 `B2AT/.../0x2`、`B2AT/.../0x3`，heartbeat `HB8/HB10`，A2B `0x8/0x1/0x29` | 通过（连续单槽双向序号）；非并发/压力/超时 |
+| mailbox0 四通道矩阵闭环 | ch0–ch3 分别完成 Linux→CPU3→Linux 单次闭环 | ch0 `rx=1 0xb2a00000/0x28 tx=1/0`；ch1 `rx=1 0xb2a00001/0x2a tx=1/0`；ch2 `rx=1 0xb2a00002/0x2b tx=1/0`；ch3 `rx=1 0xb2a00003/0x29 tx=1/0`；CPU3 observation `0x4d345249`（M4RI），`a2b_now=0xf` | 通过（候选 SPI97–100 路由至 CPU3，四通道独立 A2B/B2A 闭环）；A2B_STATUS 远端确认/清除语义未验证 |
+| A2B_STATUS ch3 clear | 验证 CPU3 写 BIT(3) 是否清除对应 pending 位 | ch3 `rx:1/0xb2a00003/0x29,tx:1/0`；`a2b_now=0x0/0xa2b00003/0x29`；`mbox_observation=0x41434b43/0x8/0x0/0x8`（ACKC；写前/写后/掩码） | 通过（限 mailbox0 ch3 当前 RAM candidate）；连续重复门铃、全通道及其他 controller 未验证 |
+| mailbox0 ch3 连续两轮通信 | 修正 `knows_txdone=false` 后重复验证同一 ch3 闭环及清零 | 第二轮 `ch3=rx:2/0xb2a00003/0x2a,tx:2/1`；`a2b_now=0x0/0xa2b00003/0x2a`；`mbox_observation=0x41434b43/0x8/0x0/0x8`；两轮最终 pending 均为 0 | 通过（限当前 RAM candidate mailbox0 ch3）；非负 `tx=1` 为成功提交 cookie；不覆盖四通道重复、并发或 mailbox1/2 |
+| mailbox0 ch0–ch2 回执与清 pending | 验证 ch0/ch1/ch2 发送、CPU3 回执及 pending 清零 | ch0 `rx:1/0xb2a00000/0xa,tx:1/0`；ch1 `rx:1/0xb2a00001/0xb,tx:1/0`；ch2 `rx:1/0xb2a00002/0xc,tx:1/0`；`a2b_now=0x0/...`；`mbox_observation=0x41434b43/0x4/0x0/0x4`（ACKC，ch2 写前/写后/掩码） | 通过（限当前 RAM candidate）；结合 ch3 可确认至少 ch2/ch3 直接观测清除；不覆盖并发、高吞吐或 mailbox1/2 |
+| 12 控制器候选 mailbox1 ch0 request | 建立 mailbox1 ch0 请求路径 | `rockchip_mbox_startup` 发生 synchronous external abort；候选停止 | 失败（RAM-only 候选）；不将异常归结为唯一根因，不继续探索 mailbox1/2 |
+| mailbox0 四通道版本主机构建 | 当前内核/Zephyr mailbox0 四通道版本可编译 | 主机编译成功；未上板 | 通过（主机静态） |
+| 协议 groundwork 主机 C 单元测试 | `r1_amp_protocol.h/.c` 可由主机测试验证 | C 单元测试通过；尚未 Linux↔CPU3 集成、上板或 RAM-only 运行 | 通过（主机单元测试；非板端证据） |
+| mailbox0 ch0 RAM-only 基线回归 | 基线候选启动、CPU3 进入 Zephyr 后完成一次 ch0 doorbell/回执 | `r1-boot-fit.img` 已传板（SHA-256 前缀 `85383311…`）；Linux `5.10.252`、`nproc=7`、Zephyr carveout 存在；`zephyr-mbox0-baseline.bin` 36,912 B，PSCI `CPU_ON ret=0`，`current_el=4`、heartbeat；`0 41` 后 `m0c0=rx:1/0xb2a00000/0x29,tx:1/0`、`a2b_now=m0:0` | 通过（RAM-only、仅 ch0；非新协议集成，非四通道全测） |
+| RAM-only MailMsg V1 最小闭环 | MailMsg priority 0 消息经 mailbox0 ch0 通知后返回 PONG | FIT SHA-256 `e7c73a7d3628654badbd3a98559307f32325519043049a32d2abd39d19070400`；Zephyr SHA-256 `a2b386ebda0493c7aa72f7a7f07156af0872e51ee9874db2cb365a57ec9ebf46`；Linux `5.10.252`、`nproc=7`、CPU_ON ret=0、`current_el=4`；`priority=0 valid=1 type=2 sequence=1 value=42`；`m0c0=rx:1/0xb2a10000/0x0,tx:1/0`、`a2b_now=m0:0x0` | 通过（一次 RAM-only PING/PONG；未验证 priority 1–3、负载/并发、可靠性或 eMMC） |
+| MailMsg V1 连续四优先级消息 | 连续 priority 0–3 消息分别返回 value+1 且保持有效 | `p0 seq2 val11`、`p1 seq3 val21`、`p2 seq4 val31`、`p3 seq5 val41`，均 `type=2 valid=1`；m0c0–m0c3 分别收到对应 controller 数据，`a2b_now=m0:0` | 通过（一次连续四消息；不覆盖抢占、并发/高负载、队列满、长期稳定或大数据） |
+| RAM-only MailMsg V2 ch0 正常路径 | V2 帧经 mailbox0 ch0 完成一次 PING/PONG，CRC32 正常路径可运行 | 修正 DTS loader size `0x9030→0xa030` 后，`image=41008/41008`；`CPU_ON ret=0`；`type=2 seq=1 value=42`；`m0c0 rx 0xb2a10000/0x0, tx 1/0`，pending `0` | 通过（仅板端 CRC V2 正常路径；篡改拒收仍仅 host unit test） |
+
+## 结论
+
+已完成最小共享内存 PING 原型的主机侧 Linux/Zephyr/DTB/resource/FIT 构建与回读核验，并在当前 RAM candidate 上完成序列 `1`–`8` 的顺序运行时回归。标准 PSCI 启动后的 Zephyr 与 Linux 对八次单槽请求均返回 `valid=1` 且结果正确；其中同一实例中 `llm_demo-amp` 以显式 CPU `[3,4,5,6]` 成功初始化并对 `ok` 生成 `Alright,`，无需重启 Zephyr 即完成第三次 PING `7→8`。随后以单独 RAM-only 候选启用 `mailbox0`，确认 Linux `rockchip-mailbox` controller 绑定；又在主机侧确认 AMP DTS 的 mailbox client wiring 指向通道 0/3，并审计确认 Linux controller IRQ 93–96 的方向是对端→Linux，而非 Linux TX3。最新 RAM-only 只读 MMIO 观察中，Linux TX3 返回 `mailbox_tx_ret=0` 且读到 `A2B status=0/cmd=1/data=41`，Zephyr CPU3 同一时点读到 `marker=0x4d424f58, status=0, cmd=1, data=41`，因此 A2B 寄存器可见性/路径已验证。CPU3 执行 `irq_enable(100)` 后的 GIC 观察为 `GICE 0x47494345/0x8fc00211/0x0/0x300`，排除了 IRQ100 未启用/未路由；Linux TX3 ping 后无 MISR，故不能把 IRQ100 认作该 TX3 事件的对应中断。v2 只读扫描中，标准 SPI INTID32–511 返回 `PN00 0x504e3030/0/0/0`，基线/差分均为零，同时 `a2b_at_tx/a2b_now=0/1/0x29` 表明寄存器写入保留但本扫描窗口未见新增标准 SPI pending。A2B_INTEN 只读观察中，启动为 `A2BI=0x41324249/0/0/0`，Linux TX3 ping 后为 `A2BP=0x41324250/0/0/1`，Linux 同一状态为 `a2b_now=0/1/0x29`，即 `A2B_INTEN=0`、`A2B_STATUS=0`、`CMD3=1`、`DAT3=0x29`；这支持“gate 未打开可能解释无 pending”的假设。随后 A2B gate enable 只读回读为启动 `A2BE=0x41324245/0/0x8/0`、PING 后 `A2BP=0x41324250/0x8/0x8/0x1`，Linux `a2b_at_tx/a2b_now=0x8/0x1/0x29`，证明 bit3 写入可回读并使 A2B_STATUS bit3 置位；gate-open pending scan candidate 上 Linux PING `41` 得到 `42`，`mbox_observation=0x50454e44/0x64/0x0/0x10`，raw GIC INTID100 pending 基线由 `0` 变为 `0x10`（word3 bit4），直接证实 Linux TX3 经 A2B channel 3 gate 产生标准 GIC SPI100 pending。该结果不证明 Zephyr ISR 已触发，也不表示完整 doorbell 已完成；候选 IRQ100 ISR 仍未验证。v2 结果仅表示未观测到标准 SPI pending 差分，不等同于绝对没有中断或否定其他通知路径。第二次观察为零是 Linux ping 按设计先清观察区所致。结论仍不代表压力、并发、吞吐、异常恢复、长期稳定性或性能验证；A2B ISR/doorbell、B2A/Linux RX、RPMsg、外设和 mailbox client channel request 仍未验证，未写启动分区或保存 U-Boot 环境。
+
+补充结论：12 控制器候选在 mailbox1 ch0 request 的 `rockchip_mbox_startup` 触发 synchronous external abort，已停止并回退 mailbox0 四通道。当前内核/Zephyr mailbox0 四通道版本已完成主机构建；协议 groundwork 仅通过主机 C 单元测试，尚未 Linux↔CPU3 集成、上板或 RAM-only 运行验证。
+
+补充结论：新的 `r1-boot-fit.img` RAM-only 基线回归已启动 Linux `5.10.252`（`nproc=7`，Zephyr carveout present），加载 `36,912 B` 的 `zephyr-mbox0-baseline.bin` 后 PSCI `CPU_ON ret=0`，Zephyr `current_el=4` 并持续 heartbeat；doorbell `0 41` 后仅 ch0 得到 `m0c0=rx:1/0xb2a00000/0x29,tx:1/0`、`a2b_now=m0:0`。该结果不称为新协议集成，也不扩展为本轮四通道全测。
+
+补充结论：2026-08-27 RAM-only MailMsg V1 候选完成一次 priority 0 的共享内存 PING/PONG。`mailmsg_ping` 写入 value 41，`mailmsg_response` 返回 `priority=0 valid=1 type=2 sequence=1 value=42`；状态为 `m0c0=rx:1/0xb2a10000/0x0,tx:1/0`、`a2b_now=m0:0x0`。FIT SHA-256 为 `e7c73a7d3628654badbd3a98559307f32325519043049a32d2abd39d19070400`，Zephyr SHA-256 为 `a2b386ebda0493c7aa72f7a7f07156af0872e51ee9874db2cb365a57ec9ebf46`。仅覆盖一次 MailMsg priority 0 与 mailbox0 ch0 通知，不覆盖 priority 1–3、负载/并发、大数据、可靠性或 eMMC。
+
+补充结论：同一 MailMsg V1 RAM-only session 连续发送 priority/value `0/10`、`1/20`、`2/30`、`3/40` 后，依次收到 `p0 seq2 val11`、`p1 seq3 val21`、`p2 seq4 val31`、`p3 seq5 val41`，均 `type=2 valid=1`；m0c0–m0c3 分别收到对应映射，`a2b_now=m0:0`。这仅验证四 priority 独立映射和一次连续四消息 PING/PONG，不覆盖抢占调度、并发/高负载、队列满策略、长期稳定或大数据。
+
+补充结论：V2 前一次候选因旧 DTS sysfs loader size `0x9030` 对应的 `36,912 B` 上限触发 `cat: File too large`，固件被截断，结果无效。修正为 `0xa030` 后，Zephyr image 完整写入 `41008/41008`，`CPU_ON ret=0`；priority 0 value 41 返回 `type=2 seq=1 value=42`，`m0c0 rx 0xb2a10000/0x0, tx 1/0`，pending 为 0。该结果仅证明板端 CRC V2 正常路径一次运行；payload 篡改拒收仍仅由 host unit test 证明，不扩展为板端拒收或故障恢复。
+
+## 关联知识与问题
+
+补充结论：one-shot IRQ candidate 已实测 Zephyr IRQ100 ISR 触发并读取 A2B status bit3、`CMD3=1`、`DAT3=41`；ISR 自行 mask 且未 ack mailbox。因此 Linux→Zephyr doorbell（mailbox0 A2B ch3 gate→GIC100）已验证，但 B2A/full duplex 仍未验证。
+
+补充结论：B2A one-shot 已实测 `mailbox_rx_count` 从 `0` 到 `1`，证明 Zephyr B2A ch0 write 到达 Linux amp-rx callback；与 A2B 共同形成双向 doorbell 原型。未记录 IRQ93 前后计数，实际寄存器清零未直接读取，尚不等同于完整双向消息/ack 或 RPMsg 验证。
+
+补充结论：连续三轮中 request/response 序号、B2A ACK 序号和 Linux callback 计数一一对应；该结果仍限于单槽、手动 sleep/response polling。`mbox_send_message` 非负返回值是成功提交 cookie，负数才是失败。
+
+补充结论：2026-08-26 的 RAM-only matrix candidate 在不修改 eMMC 的前提下完成 mailbox0 ch0–ch3 各一次 Linux→CPU3→Linux 闭环，验证候选 SPI97–100 路由至 CPU3 与四通道独立 A2B/B2A 闭环。A2B_STATUS 远端确认/清除语义仍未验证；Zephyr 本轮不写 A2B_STATUS、每次 IRQ 后 one-shot 屏蔽，最终 `a2b_now=0xf` 不表示持久化。
+
+补充结论：同日 A2B clear probe 在当前 RAM candidate 的 mailbox0 ch3 上观察到 `ACKC/0x8/0x0/0x8`，按探针定义为写前 A2B_STATUS `0x8`、写后回读 `0x0`、写入掩码 `0x8`；直接支持 CPU3 写 A2B_STATUS `BIT(3)` 清除对应 pending 位。该证据不覆盖连续重复门铃、全通道或其他 controller。
+
+补充结论：修正客户端 `knows_txdone=false` 后，当前 RAM candidate 的 mailbox0 ch3 已完成连续两次 Linux→CPU3→Linux；第二轮 `rx=2`、`tx=2/1`、数据为 `0xb2a00003/0x2a`，两轮最终 `a2b_now=0x0`。`tx=1` 是非负 mailbox 队列 cookie，表示成功提交；该结果不扩展为四通道重复、并发或 mailbox1/2 行为。
+
+补充结论：同一可重复 RAM candidate 上 ch0/ch1/ch2 均完成发送、CPU3 回执并清 pending；`ACKC/0x4/0x0/0x4` 按定义直接记录 ch2 的写前 status、写后回读和掩码。结合此前 ch3 的 `ACKC/0x8/0x0/0x8`，至少 ch2/ch3 的清除已有直接观测，四通道独立闭环可复用；不宣称并发、高吞吐或 mailbox1/2 已验证。
+
+- 支持：`EXP-20260821-003` 已验证的 Linux→Zephyr 单向共享页心跳和 cache 可见性。
+- 已验证：当前 RAM candidate 的八次顺序 Linux→Zephyr→Linux PING/response 与显式 cache-maintained 可见性；同一实例中一次 RKLLM 生成后仍完成 PING 回环。
+- 已验证（静态）：AMP DTS 的 `mbox-names`/`mboxes` 已编译进 DTB，RX/TX 分别指向 `mailbox0` 通道 0/3；未验证 client 驱动申请或消息传输。
+- 已验证：Linux `rockchip-mailbox` 的 IRQ 是 B2A 接收方向，不能用 Linux 的 93–96 IRQ 观察来判断 A2B TX3 是否到达 Zephyr。
+- 已验证：RAM-only 只读 MMIO 观察确认 Linux TX3 写入的 A2B `status/cmd/data` 在同一时点对 Zephyr CPU3 可见；该结果不扩展为 ISR、中断路由、B2A/Linux RX 或 RPMsg 证据。
+- 已验证（候选 IRQ 排除）：CPU3 `irq_enable(100)` 后 GIC 观察显示 SPI100 已启用且路由至 CPU3；Linux TX3 ping 后无 MISR，因此排除“IRQ100 未启用/未路由”，但不指定任何替代 INTID。第二次观察归零由 Linux ping 按设计清观察区造成。
+- 已验证（v2 扫描边界）：Linux TX3 PING 前后，标准 SPI INTID32–511 的 GICD_ISPENDR 扫描均为 `PN00 0x504e3030/0/0/0`，同时 `a2b_at_tx/a2b_now=0/1/0x29`。结论仅为未观测到标准 SPI pending 差分，不等同于绝对没有中断或否定其他通知路径。
+- 已验证（A2B_INTEN 只读边界）：启动 `A2BI=0x41324249/0/0/0`，Linux TX3 ping 后 `A2BP=0x41324250/0/0/1`，Linux 同状态为 `a2b_now=0/1/0x29`；即 `A2B_INTEN=0`、`A2B_STATUS=0`、`CMD3=1`、`DAT3=0x29`。支持 gate 未打开可能解释无 pending；bit3 语义及 A2B ISR 仍未验证。
+- 已验证（A2B gate enable 回读）：启动 `A2BE=0x41324245/0/0x8/0`，PING 后 `A2BP=0x41324250/0x8/0x8/0x1`，Linux `a2b_at_tx/a2b_now=0x8/0x1/0x29`；bit3 写入可回读并使 A2B_STATUS bit3 置位。候选 IRQ100 ISR 仍未命中，不能据此断言具体替代线路。
+- 已验证（gate-open pending）：Linux PING `41→42` 时，`a2b_at_tx/a2b_now=0x8/0x1/0x29`，`mbox_observation=0x50454e44/0x64/0x0/0x10`，raw GIC INTID100 pending 基线由 `0` 变为 `0x10`（word3 bit4）。这直接证实 A2B channel 3 gate 产生标准 SPI100 pending；不证明 Zephyr ISR 或完整 doorbell 已完成。
+- 已验证（B2A one-shot）：启动前 `image=0, mailbox_rx_count=0`；Zephyr start + Linux PING `41` 后 `seq=1 valid=1 result=42`，`mailbox_rx_count=1 mailbox_tx_count=1 mailbox_tx_ret=0`，证明 Zephyr B2A ch0 write 到达 Linux amp-rx callback。与 A2B 方向共同形成双向 doorbell 原型；未记录 IRQ93 前后计数，且实际寄存器清零未直接读取，Linux ack 语义仅来自源码。
+- 待验证候选：官方 AMP DTS 将 raw INTID 100 路由到 CPU3；其启用和路由已观察，但未证实该中断就是 TX3，也不推断任何替代 INTID。
+- 待验证：压力、并发、吞吐、异常恢复、长期稳定性、性能、RPMsg 以及外设行为。
+
+## 后续行动
+
+- [ ] 将通过主机 C 单元测试的协议 groundwork 接入 Linux↔CPU3 mailbox0 四通道原型，并先完成最小 RAM-only 上板验证；暂不接入 RPMsg。

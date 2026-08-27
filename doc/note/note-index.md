@@ -15,6 +15,15 @@
 - [U-Boot SPL 启动设备顺序与 `/chosen`](uboot-spl-boot-order.md)
 - [Rockchip 外部启动载荷与 Binman](rockchip-external-boot-blobs.md)
 
+## NPU 与边缘 AI
+
+- [RKLLM Runtime 的显式 CPU mask 配置](rkllm-cpu-mask-configuration.md)
+
+## AMP 与 IPC
+
+- [AMP 共享内存队列与通知后端分层](amp-shared-memory-notification-abstraction.md)
+- [MailMsg 协议：共享内存消息面与可替换通知层](mailmsg-protocol.md)
+
 ## 关联查阅方法
 
 打开知识笔记后，先看“前置知识”和“实际验证”，再通过属性中的 `related` 或 Obsidian 反向链接查看相关实验与问题。尚未形成稳定认识的内容保留在实验或问题记录中，不提前整理为知识笔记。

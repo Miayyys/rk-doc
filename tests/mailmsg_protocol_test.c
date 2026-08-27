@@ -1,0 +1,36 @@
+#include <assert.h>
+#include <string.h>
+
+#include "../src/mailmsg/mailmsg.h"
+
+static void no_op(const void *addr, uint32_t len)
+{
+	(void)addr;
+	(void)len;
+}
+
+int main(void)
+{
+	struct mailmsg_memory_ops ops = { .publish = no_op, .acquire = no_op };
+	struct mailmsg_ring ring = { 0 };
+	struct mailmsg_message in = {
+		.type = MAILMSG_MSG_PING,
+		.sequence = 7,
+		.length = 2,
+		.payload = { 0x12, 0x34 },
+	};
+	struct mailmsg_message out = { 0 };
+
+	assert(mailmsg_ring_push(&ring, &ops, &in) == 0);
+	assert(mailmsg_ring_pop(&ring, &ops, &out) == 0);
+	assert(out.type == MAILMSG_MSG_PING);
+	assert(out.sequence == 7);
+	assert(out.length == 2);
+	assert(memcmp(out.payload, in.payload, in.length) == 0);
+	assert(mailmsg_ring_pop(&ring, &ops, &out) == MAILMSG_RING_EMPTY);
+
+	assert(mailmsg_ring_push(&ring, &ops, &in) == MAILMSG_RING_OK);
+	ring.slot[1].payload[0] ^= 0xffU;
+	assert(mailmsg_ring_pop(&ring, &ops, &out) == MAILMSG_RING_BAD_CRC);
+	return 0;
+}

@@ -3,13 +3,15 @@ title: "U-Boot FIT 镜像：FDT 容器与启动载荷"
 type: note
 status: verified
 created: 2026-08-09
-updated: 2026-08-09
+updated: 2026-08-21
 tags: [uboot, fit, fdt, boot]
 aliases: ["FIT image", "Flattened Image Tree", "FIT 镜像"]
 related:
   - "[[experiment/exp-20260807-002-boot-linux-via-debug-uart]]"
   - "[[note/r1-emmc-partition-layout]]"
   - "[[note/device-tree-model-and-compatible]]"
+  - "[[experiment/exp-20260820-001-static-amp-dts-resource-partition]]"
+  - "[[issue/issue-20260820-001-resource-dtb-overrides-fit-dtb]]"
 ---
 
 # U-Boot FIT 镜像：FDT 容器与启动载荷
@@ -47,11 +49,17 @@ FIT（FDT 格式的元数据树）
 | --- | --- | --- | --- |
 | `fdt` | 供 Linux 使用的板级设备树载荷 | `type = "flat_dt"`、`arch = "arm64"`、`data-position = <0x800>`、`data-size = <0x24172>`、`compression = "none"`、SHA-256 | 从 FIT 中取出 DTB，并作为内核启动时的硬件描述 |
 | `kernel` | Linux 内核载荷 | `type = "kernel"`、`os = "linux"`、`arch = "arm64"`、`data-position = <0x24a00>`、`data-size = <0x220da00>`、`load`、`entry`、SHA-256 | 取出未压缩内核，按镜像的加载/入口语义准备跳转 |
-| `resource` | 附属资源载荷 | `type = "multi"`、`arch = "arm64"`、`data-position = <0x2232400>`、`data-size = <0x9c000>`、SHA-256 | 交给厂商启动流程或相关组件处理；其内部文件格式尚未解析 |
+| `resource` | 附属资源载荷 | `type = "multi"`、`arch = "arm64"`、`data-position = <0x2232400>`、`data-size = <0x9c000>`、SHA-256 | 交给厂商启动流程或相关组件处理；R1 已验证其内含最终 DTB |
 
 三个节点共有的 `data-position` 和 `data-size` 定义“从 FIT 起始位置取哪一段字节”；`compression = "none"` 表示这些载荷在该镜像中没有压缩；`hash` 节点保存对应数据的 SHA-256 期望值。`load`、`entry` 的具体数值由 U-Boot 和镜像类型解释，不能仅凭本 DTS 中的 `0xffffff00`、`0xffffff01` 当作普通物理内存地址。
 
 `configurations/conf` 是默认启动方案：它用 `fdt = "fdt"`、`kernel = "kernel"` 和 `multi = "resource"` 把三个节点引用在一起。其 `signature` 子节点描述应覆盖的对象、算法、填充与键提示；它本身不证明本次启动已经完成签名验证。
+
+### R1 厂商 resource 对最终 DTB 的影响
+
+R1 的 `resource` 不是纯 logo 附件。它是带索引的厂商格式，原始内容含 `rk-kernel.dtb`、`logo.bmp` 与 `logo_kernel.bmp`。原 resource 的 `rk-kernel.dtb` 与 FIT 的 `fdt` 子镜像字节相同；但在 RAM 测试中，即使 FIT `fdt` 已替换成 AMP DTB，Linux 仍收到旧树。只替换并重建 resource 的 `rk-kernel.dtb` 后，Linux 才得到 AMP 树（7 CPU、`cpu@300` 缺失、`zephyr@50000000` 存在）。
+
+因此，对这版 R1 厂商 U-Boot 路径，`resource/rk-kernel.dtb` 是实际 Linux DTB 的输入之一，不能仅替换 FIT 的 `fdt` 子镜像。这个结论限于当前厂商 U-Boot 和 RAM 启动实测路径；它不推广到通用 U-Boot/FIT，也不说明具体板级函数如何实现该替换。
 
 ## 工作流程
 
@@ -90,7 +98,7 @@ FIT（FDT 格式的元数据树）
 
 1. FIT 是基于 FDT 的 U-Boot 启动镜像容器描述。
 2. `images` 描述载荷，`configurations` 选择启动组合。
-3. FIT 中名为 `fdt` 的载荷才可能是板级设备树。
+3. FIT 中名为 `fdt` 的载荷通常是板级设备树；R1 厂商路径还会从 resource 的 `rk-kernel.dtb` 取得最终树。
 4. 位置、大小、哈希和签名必须读取结构化属性后再判断。
 
 ## 参考资料
