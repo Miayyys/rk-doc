@@ -17,6 +17,7 @@
 #define AMP_RSP_PAYLOAD_ADDR  (AMP_STATUS_ADDR + 0xc0UL)
 #define AMP_RSP_COMMIT_ADDR   (AMP_STATUS_ADDR + 0x100UL)
 #define AMP_MBOX_OBS_ADDR     (AMP_STATUS_ADDR + 0x140UL)
+#define AMP_MAILMSG_TX_FULL_OBS_ADDR (AMP_STATUS_ADDR + 0x180UL)
 #define AMP_QUEUE_ADDR        (AMP_STATUS_ADDR + 0x200UL)
 #define AMP_CACHE_LINE_SIZE   64U
 
@@ -101,6 +102,8 @@ _Static_assert(sizeof(struct amp_commit_line) == AMP_CACHE_LINE_SIZE,
 	       "commit must occupy one cache line");
 _Static_assert(sizeof(struct amp_mbox_observation_line) == AMP_CACHE_LINE_SIZE,
 	       "mailbox observation must occupy one cache line");
+_Static_assert(sizeof(struct mailmsg_tx_full_observation) == AMP_CACHE_LINE_SIZE,
+	       "MailMsg TX-full observation must occupy one cache line");
 
 static inline void amp_dsb(void)
 {
@@ -155,9 +158,57 @@ static uint32_t mailmsg_rx_error_count;
 static bool mailmsg_endpoint_ready;
 static volatile struct amp_mbox_observation_line *const mailbox_observation =
 	(volatile struct amp_mbox_observation_line *)AMP_MBOX_OBS_ADDR;
+static volatile struct mailmsg_tx_full_observation *const mailmsg_tx_full_observation =
+	(volatile struct mailmsg_tx_full_observation *)AMP_MAILMSG_TX_FULL_OBS_ADDR;
 static volatile struct mailmsg_shared *const amp_queue =
 	(volatile struct mailmsg_shared *)AMP_QUEUE_ADDR;
 static struct mailmsg_endpoint cpu3_endpoint;
+static uint32_t mailmsg_tx_full_commit;
+static uint32_t mailmsg_tx_full_count;
+
+/*
+ * This is test-service diagnostics, not a MailMsg transport policy.  CPU3
+ * is its only writer; Linux reads a stable snapshot through commit/inverse.
+ */
+static void mailmsg_publish_tx_full_observation(uint32_t priority,
+					uint32_t type, int32_t result)
+{
+	uint32_t commit = ++mailmsg_tx_full_commit;
+
+	if (!commit)
+		commit = ++mailmsg_tx_full_commit;
+	mailmsg_tx_full_observation->commit = 0U;
+	mailmsg_tx_full_observation->magic = MAILMSG_TX_FULL_OBSERVATION_MAGIC;
+	mailmsg_tx_full_observation->full_count = mailmsg_tx_full_count;
+	mailmsg_tx_full_observation->last_priority = priority;
+	mailmsg_tx_full_observation->last_type = type;
+	mailmsg_tx_full_observation->last_result = result;
+	mailmsg_tx_full_observation->commit_inv = ~commit;
+	amp_dsb();
+	mailmsg_tx_full_observation->commit = commit;
+	(void)sys_cache_data_flush_range((void *)mailmsg_tx_full_observation,
+					 AMP_CACHE_LINE_SIZE);
+	amp_dsb();
+}
+
+static void mailmsg_reset_tx_full_observation(void)
+{
+	mailmsg_tx_full_count = 0U;
+	mailmsg_tx_full_commit = 0U;
+	mailmsg_publish_tx_full_observation(MAILMSG_PRIORITY_COUNT,
+					   MAILMSG_MSG_NOP, MAILMSG_RING_OK);
+}
+
+static void mailmsg_record_tx_full(uint32_t priority, uint32_t type,
+				   const struct mailmsg_send_result *result)
+{
+	if (!result || result->queue_result != MAILMSG_RING_FULL)
+		return;
+
+	mailmsg_tx_full_count++;
+	mailmsg_publish_tx_full_observation(priority, type,
+					   result->queue_result);
+}
 
 static int mailmsg_cpu3_notify(void *context,
 			       enum mailmsg_priority priority)
@@ -189,15 +240,18 @@ static bool mailmsg_send_feedback(uint32_t priority, uint32_t type,
 {
 	struct mailmsg_send_result result;
 	uint8_t payload[MAILMSG_FEEDBACK_BYTES] = { 0 };
+	int ret;
 
 	mailmsg_store_payload_u32(&payload[MAILMSG_FEEDBACK_SEQUENCE_OFFSET],
 				  peer_sequence);
 	mailmsg_store_payload_u32(&payload[MAILMSG_FEEDBACK_STATUS_OFFSET],
 				  status);
-	return mailmsg_endpoint_send(&cpu3_endpoint,
-				     (enum mailmsg_priority)priority, type,
-				     payload, sizeof(payload), &result) ==
-		MAILMSG_ENDPOINT_OK;
+	ret = mailmsg_endpoint_send(&cpu3_endpoint,
+				    (enum mailmsg_priority)priority, type,
+				    payload, sizeof(payload), &result);
+	if (ret)
+		mailmsg_record_tx_full(priority, type, &result);
+	return ret == MAILMSG_ENDPOINT_OK;
 }
 
 static bool mailmsg_send_pong(uint32_t priority,
@@ -206,15 +260,18 @@ static bool mailmsg_send_pong(uint32_t priority,
 	struct mailmsg_send_result result;
 	uint8_t payload[4];
 	uint32_t type;
+	int ret;
 
 	type = request->type == MAILMSG_MSG_PING ?
 		MAILMSG_MSG_PONG : MAILMSG_MSG_NOP;
 	mailmsg_store_payload_u32(payload,
 		mailmsg_payload_u32(request->payload) + 1U);
-	return mailmsg_endpoint_send(&cpu3_endpoint,
-				     (enum mailmsg_priority)priority, type,
-				     payload, sizeof(payload), &result) ==
-		MAILMSG_ENDPOINT_OK;
+	ret = mailmsg_endpoint_send(&cpu3_endpoint,
+				    (enum mailmsg_priority)priority, type,
+				    payload, sizeof(payload), &result);
+	if (ret)
+		mailmsg_record_tx_full(priority, type, &result);
+	return ret == MAILMSG_ENDPOINT_OK;
 }
 
 static void mailmsg_enable_a2b_channels(void)
@@ -428,8 +485,9 @@ int main(void)
 				      (struct mailmsg_shared *)amp_queue,
 				      &mailmsg_queue_memory_ops,
 				      &mailmsg_cpu3_notify_endpoint,
-				      MAILMSG_ENDPOINT_CPU3) ==
+			      MAILMSG_ENDPOINT_CPU3) ==
 		MAILMSG_ENDPOINT_OK;
+	mailmsg_reset_tx_full_observation();
 	mailmsg_enable_a2b_channels();
 	mailmsg_snapshot_gic_routes();
 	irq_enable(RK3588_MBOX_A2B_IRQ_FOR(0)); irq_enable(RK3588_MBOX_A2B_IRQ_FOR(1));

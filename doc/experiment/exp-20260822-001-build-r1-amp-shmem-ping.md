@@ -397,6 +397,24 @@ Zephyr 在首次 doorbell 前不消费；对 p3 test-only `mailmsg_queue_push` �
 
 四个通道各为 `rx=1`、`tx=1`，通知结果均为 `SENT`。随后 p0 CRC 注入 `400` 返回 NACK `type=4 sequence=7 peer_sequence=5 status=1`，无 PONG；状态为 `CRCE`，CPU3 心跳继续。该错误路径仍是测试钩子的直接构帧，正常路径则经 endpoint API。由此验证当前候选的 p0/p1 ACK、p2/p3 无 ACK/NACK 代表路径及 p0 CRC 错误反馈；不将一次四通道回归扩展为并发、压力或完整产品验证。queue-full 本轮未重新测试，步骤 34 的 p3 正常及 FULL 代表路径结论保持不变；自动重传仍未实现。
 
+### 步骤 36：RAM-only MailMsg V3 混合突发与满队列隔离回归
+
+目的与预期结果：在新的 endpoint candidate 会话中，验证四个独立 priority ring 的 FIFO 消费、test-only 无 doorbell 预填与 raw doorbell 唤醒关系，并验证 p3 满队列不会阻塞其他 priority 的入队、通知或消费。
+
+本次运行环境为 Linux `5.10.252`、`nproc=7`；Zephyr `image=41008/41008`，`CPU_ON ret=0`，已到达 EL1。第一段测试使用 test-only `mailmsg_queue_push` 预填且不发送 doorbell：p0 写入 `100..102`、p1 写入 `200..202`、p2 写入 `300..306`、p3 写入 `400..406`；随后用 raw `doorbell 0..3` 分别唤醒。结果为 p0 ACK/PONG `101..103`、p1 ACK/PONG `201..203`、p2 仅 PONG `301..307`、p3 仅 PONG `401..407`。四个 priority 均按各自 FIFO 顺序消费，未见串帧、漏帧或 CRC 错误。该 raw doorbell 不经过 endpoint notify；状态中的 `notify=-11` 是直接 raw 唤醒路径的观察值，不应解释为 endpoint 通知失败。
+
+第二段在干净会话中先用 test-only 路径预填 p3 `500..506`，第 8 条 `507` 返回 `ENOSPC`，退出码为 `1`。随后通过正常 endpoint 发送 p0 `900`，得到 ACK `type=3 sequence=1 peer_sequence=9 status=0` 和 PONG `type=2 sequence=2 value=901`；p3 随后返回 PONG `sequence=3..9`、`value=501..507`，全部成功消费。状态观察为 m0c0 通知 `SENT`、m0c3 使用 raw doorbell、`a2b_now=0`。因此本次代表路径中 p3 `FULL` 未阻塞 p0 入队、通知或消费，也未丢失已入队的 p3 帧。`peer_sequence=9` 源于 test-only 入队对第 8 次失败尝试仍消耗本地序号，是当前测试实现观察，不是串队证据。
+
+本步骤验证的是当前 mailbox0 四通道后端的顺序突发与满队列隔离代表路径；不覆盖并发生产者/消费者、全局调度公平性或抢占、吞吐/延迟、长期稳定性、自动重传、大载荷或 eMMC 持久化。
+
+### 步骤 37：RAM-only MailMsg V3 TX-full 观测
+
+目的与预期结果：修正 FIT 封装方式后，在不改变持久化启动介质的前提下，观察 endpoint 正常 p0 请求及反向 PONG 入队满时的诊断状态；该观察不改变重试、重排或丢弃策略。
+
+主机默认 `mkimage -f` 生成的是内嵌数据 FIT；vendor U-Boot 读取后打印 usage。此前可工作的候选使用外置 `data-position/data-size`。本次以 `mkimage -E -p 0x800 -B 0x200` 重新封装最终候选，恢复 FDT `0x800`、kernel `0x39a00`、resource `0x2427c00` 的偏移，总大小 `38636544 B`，RAM boot 成功。板端 artifact 为 `/userdata/r1-ram-boot-test/r1-mailmsg-tx-full-observation-external.img`，SHA-256 为 `5ebf4a8222d343cdc319311ea18ebf1e376f6ec8a2ecbd08f154b9f25f7eec0c`；Zephyr 为 `/userdata/zephyr-test/mailmsg_tx_full_observation.bin`，大小 `41008 B`，SHA-256 为 `8aab1e3fc0838f36e840ab4ec551164020942a43363152287d87641a2bfd6a99`。Linux 启动为 `5.10.252`、`nproc=7`；Zephyr 初始化 TX-full 诊断状态为 `valid=1 commit=1 count=0 priority=4 type=0 result=0`。
+
+正常 endpoint p0 发送 `600..603` 均退出码 `0`。板端 response 依次为 ACK/PONG：ACK `sequence=1`、PONG `sequence=2 value=601`；ACK `sequence=3`、PONG `sequence=4 value=602`；ACK `sequence=5`、PONG `sequence=6 value=603`；以及 ACK `sequence=7 peer_sequence=4`。随后状态为 `mailmsg_tx_full valid=1 commit=2 count=1 priority=0 type=2 result=-2`。这确认反向 PONG 入队在已有 7 个 response frame 后出现一次 TX-full 观测（`count:1`）；状态只作报告，未引入自动重传、重排、丢弃或其他策略变化。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -442,6 +460,8 @@ Zephyr 在首次 doorbell 前不消费；对 p3 test-only `mailmsg_queue_push` �
 | RAM-only MailMsg V3 可靠性策略 | priority 0/1 ACK/NACK，priority 2/3 无反馈；错误帧释放 slot；不自动重传 | FIT `82cb3a1f…d346aed`；Zephyr `41008 B`、SHA-256 `f217a351…d10e2b`；`image=41008/41008`、`CPU_ON ret=0`、`current_el=4`；p0 正常 `41`→ACK `type=3 seq=1 peer=1 status=0`→PONG `type=2 seq=2 value=42`；p0 CRC 注入原 seq2→NACK `type=4 seq=3 peer=2 status=1`、无 PONG，随后 p0 `200`→ACK `type=3 seq=4 peer=3 status=0`→PONG `seq=5 value=201`；p1 正常 `300`→ACK `type=3 seq=8 peer=7 status=0`→PONG `type=2 seq=9 value=301`，CRC 注入原 seq8→NACK `type=4 seq=10 peer=8 status=1`、无 PONG；p2 CRC 注入 `valid=0 reason=empty`，随后 p2 `200`→PONG `type=2 seq=7 value=201` | 通过（板端验证 p0/p1 可靠 ACK/NACK、坏帧释放 slot、p2 无反馈/立即丢弃；未覆盖 p3、自动重传、并发/压力或 eMMC） |
 | RAM-only MailMsg V3 queue-full | p3 ring 达到 7 条可用上限后第 8 条立即 FULL，不覆盖；通知后 7 条按序消费 | FIT `/userdata/r1-ram-boot-test/r1-mailmsg-v3-queue-full.img` SHA-256 `6bec6de793ce20e770a2436db860fde7c362f335b22f52460aa2e2fe1e538d81`；Zephyr `41008 B` SHA-256 `96dbf38cdcfa79f7d28afd48e6b8d6ed9e0b5f646b1a0ae06f704a74b498448d`；`cpu_on_ret=0/current_el=4`；p3 push `1..7` 成功，第 8 条 `No space left on device`、exit `1`；raw `doorbell 3 0` 后 PONG `seq1..7/value2..8` | 通过（p3 正常路径及 FULL 代表路径；不覆盖并发/压力/持久化；doorbell 仅通知） |
 | RAM-only MailMsg V3 endpoint 集成 | Linux/Zephyr endpoint API 完成 p0–p3 正常回归；p0 CRC 注入返回 NACK；通知均为 SENT | FIT `/userdata/r1-ram-boot-test/r1-mailmsg-endpoint.img`，38636544 B，SHA-256 `56b9a8fe0f5aa0f130ab1a7ab17cc8c0a840953d6ef3a8bc6f24067e062741c`；Zephyr `41008 B`，SHA-256 `e999bb38cceaecfb56e9855b65fe1261ef175d2ad6bd3aa89b82d058aedf5c86`；Linux `5.10.252`、`nproc=7`、`cpu_on_ret=0`、`current_el=4`；p0/p1 ACK+PONG、p2/p3 PONG、p0 CRC NACK 无 PONG，四通道 `rx=1 tx=1` | 通过（当前 mailbox0 四通道后端/代表路径；不覆盖并发/压力/queue-full 复测/完整产品） |
+| RAM-only MailMsg V3 混合突发与满队列隔离 | test-only 预填四个 priority 后 raw doorbell 按 FIFO 消费；p3 满队列后 p0 仍可正常 endpoint 入队/通知/消费 | 第一段 p0/p1 ACK+PONG、p2/p3 PONG，分别返回 `101..103`、`201..203`、`301..307`、`401..407`；第二段 p3 `500..506` 入队，第 8 条 `507` 返回 `ENOSPC` exit `1`，p0 `900` ACK `seq1 peer9`/PONG `seq2 value901`，p3 PONG `seq3..9/value501..507`；m0c0 `SENT`、m0c3 raw doorbell、`a2b_now=0` | 通过（当前 mailbox0 四通道后端/代表路径；不覆盖并发/公平性/抢占/吞吐延迟/长期稳定/自动重传/大载荷/eMMC） |
+| RAM-only MailMsg V3 TX-full 观测 | 修正为外置数据 FIT 后完成 RAM boot，并观察反向 PONG 入队满状态 | FIT `/userdata/r1-ram-boot-test/r1-mailmsg-tx-full-observation-external.img`，SHA-256 `5ebf4a8222d343cdc319311ea18ebf1e376f6ec8a2ecbd08f154b9f25f7eec0c`；Zephyr `41008 B`，SHA-256 `8aab1e3fc0838f36e840ab4ec551164020942a43363152287d87641a2bfd6a99`；p0 `600..603` 均 exit `0`，ACK/PONG `601..603` 后 ACK `seq7 peer4`；`mailmsg_tx_full valid=1 commit=2 count=1 priority=0 type=2 result=-2` | 通过（TX-full 诊断观察；不改变重试/重排/丢弃策略） |
 
 ## 结论
 

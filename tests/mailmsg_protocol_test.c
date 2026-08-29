@@ -3,6 +3,9 @@
 
 #include "../src/mailmsg/mailmsg.h"
 
+_Static_assert(sizeof(struct mailmsg_tx_full_observation) == 64,
+	       "TX-full observation must retain its dedicated cache line");
+
 static void no_op(const void *addr, uint32_t len)
 {
 	(void)addr;
@@ -25,6 +28,7 @@ int main(void)
 	assert(mailmsg_priority_is_reliable(MAILMSG_PRIO_CONTROL));
 	assert(!mailmsg_priority_is_reliable(MAILMSG_PRIO_NORMAL));
 	assert(!mailmsg_priority_is_reliable(MAILMSG_PRIO_BEST_EFFORT));
+	assert(MAILMSG_TX_FULL_OBSERVATION_MAGIC == 0x4d46554cU);
 
 	assert(mailmsg_ring_push(&ring, &ops, &in) == 0);
 	assert(mailmsg_ring_pop(&ring, &ops, &out) == 0);

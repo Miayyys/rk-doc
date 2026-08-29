@@ -10,10 +10,12 @@
 #include <linux/types.h>
 typedef u8 mailmsg_u8;
 typedef u32 mailmsg_u32;
+typedef s32 mailmsg_s32;
 #else
 #include <stdint.h>
 typedef uint8_t mailmsg_u8;
 typedef uint32_t mailmsg_u32;
+typedef int32_t mailmsg_s32;
 #endif
 
 #define MAILMSG_PROTOCOL_MAGIC 0x4d4d5347U /* "MMSG" */
@@ -22,6 +24,7 @@ typedef uint32_t mailmsg_u32;
 #define MAILMSG_RING_SLOTS 8U
 #define MAILMSG_PAYLOAD_BYTES 32U
 #define MAILMSG_RELIABLE_PRIORITY_MASK 0x3U
+#define MAILMSG_TX_FULL_OBSERVATION_MAGIC 0x4d46554cU /* "MFUL" */
 
 enum mailmsg_priority {
 	MAILMSG_PRIO_CRITICAL = 0,
@@ -104,6 +107,23 @@ struct mailmsg_shared {
 	struct mailmsg_ring linux_to_cpu3[MAILMSG_PRIORITY_COUNT];
 	struct mailmsg_ring cpu3_to_linux[MAILMSG_PRIORITY_COUNT];
 };
+
+/*
+ * Optional diagnostics outside struct mailmsg_shared.  It is intentionally
+ * kept separate from the ring ABI: a CPU3 test service may publish reverse
+ * queue-full observations here, while a production endpoint is free to use
+ * the return value from mailmsg_endpoint_send() directly.
+ */
+struct mailmsg_tx_full_observation {
+	mailmsg_u32 magic;
+	mailmsg_u32 commit;
+	mailmsg_u32 commit_inv;
+	mailmsg_u32 full_count;
+	mailmsg_u32 last_priority;
+	mailmsg_u32 last_type;
+	mailmsg_s32 last_result;
+	mailmsg_u8 reserved[64U - 28U];
+} __attribute__((aligned(64)));
 
 /*
  * Platform hooks are the only ordering/cache dependency of the protocol.
