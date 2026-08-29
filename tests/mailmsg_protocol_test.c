@@ -21,6 +21,11 @@ int main(void)
 	};
 	struct mailmsg_message out = { 0 };
 
+	assert(mailmsg_priority_is_reliable(MAILMSG_PRIO_CRITICAL));
+	assert(mailmsg_priority_is_reliable(MAILMSG_PRIO_CONTROL));
+	assert(!mailmsg_priority_is_reliable(MAILMSG_PRIO_NORMAL));
+	assert(!mailmsg_priority_is_reliable(MAILMSG_PRIO_BEST_EFFORT));
+
 	assert(mailmsg_ring_push(&ring, &ops, &in) == 0);
 	assert(mailmsg_ring_pop(&ring, &ops, &out) == 0);
 	assert(out.type == MAILMSG_MSG_PING);
@@ -32,5 +37,19 @@ int main(void)
 	assert(mailmsg_ring_push(&ring, &ops, &in) == MAILMSG_RING_OK);
 	ring.slot[1].payload[0] ^= 0xffU;
 	assert(mailmsg_ring_pop(&ring, &ops, &out) == MAILMSG_RING_BAD_CRC);
+	assert(ring.consumer == 2);
+	in.sequence = 8;
+	assert(mailmsg_ring_push(&ring, &ops, &in) == MAILMSG_RING_OK);
+	assert(mailmsg_ring_pop(&ring, &ops, &out) == MAILMSG_RING_OK);
+	assert(out.sequence == 8);
+
+	/* Eight physical slots leave capacity for seven committed frames.  The
+	 * producer gets FULL immediately; it must not wait or overwrite a slot. */
+	for (in.sequence = 9; in.sequence < 16; in.sequence++)
+		assert(mailmsg_ring_push(&ring, &ops, &in) == MAILMSG_RING_OK);
+	in.sequence = 16;
+	assert(mailmsg_ring_push(&ring, &ops, &in) == MAILMSG_RING_FULL);
+	assert(mailmsg_ring_pop(&ring, &ops, &out) == MAILMSG_RING_OK);
+	assert(mailmsg_ring_push(&ring, &ops, &in) == MAILMSG_RING_OK);
 	return 0;
 }

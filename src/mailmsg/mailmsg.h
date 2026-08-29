@@ -17,10 +17,11 @@ typedef uint32_t mailmsg_u32;
 #endif
 
 #define MAILMSG_PROTOCOL_MAGIC 0x4d4d5347U /* "MMSG" */
-#define MAILMSG_PROTOCOL_VERSION 2U
+#define MAILMSG_PROTOCOL_VERSION 3U
 #define MAILMSG_PRIORITY_COUNT 4U
 #define MAILMSG_RING_SLOTS 8U
 #define MAILMSG_PAYLOAD_BYTES 32U
+#define MAILMSG_RELIABLE_PRIORITY_MASK 0x3U
 
 enum mailmsg_priority {
 	MAILMSG_PRIO_CRITICAL = 0,
@@ -33,6 +34,13 @@ enum mailmsg_message_type {
 	MAILMSG_MSG_NOP = 0,
 	MAILMSG_MSG_PING = 1,
 	MAILMSG_MSG_PONG = 2,
+	MAILMSG_MSG_ACK = 3,
+	MAILMSG_MSG_NACK = 4,
+};
+
+enum mailmsg_nack_reason {
+	MAILMSG_NACK_BAD_CRC = 1,
+	MAILMSG_NACK_INVALID_FRAME = 2,
 };
 
 enum mailmsg_ring_result {
@@ -44,6 +52,13 @@ enum mailmsg_ring_result {
 	MAILMSG_RING_INVALID = -5,
 };
 
+/* V3 uses fixed per-priority transport reliability, not untrusted frame flags. */
+static inline int mailmsg_priority_is_reliable(mailmsg_u32 priority)
+{
+	return priority < MAILMSG_PRIORITY_COUNT &&
+		(MAILMSG_RELIABLE_PRIORITY_MASK & (1U << priority));
+}
+
 /* One producer and one consumer own each ring; commit is written last. */
 struct mailmsg_message {
 	mailmsg_u32 type;
@@ -53,6 +68,11 @@ struct mailmsg_message {
 	mailmsg_u32 crc32;
 	mailmsg_u32 commit;
 };
+
+/* ACK/NACK payload layout: original frame sequence, then status/reason. */
+#define MAILMSG_FEEDBACK_SEQUENCE_OFFSET 0U
+#define MAILMSG_FEEDBACK_STATUS_OFFSET 4U
+#define MAILMSG_FEEDBACK_BYTES 8U
 
 /* CRC-32/ISO-HDLC over a frame's business fields, excluding crc32/commit. */
 static inline mailmsg_u32 mailmsg_frame_crc32(const struct mailmsg_message *message)

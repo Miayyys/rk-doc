@@ -3,7 +3,7 @@ title: "EXP-20260822-001 构建 R1 Linux-Zephyr 共享内存 PING 原型"
 type: experiment
 status: verified
 created: 2026-08-22
-updated: 2026-08-27
+updated: 2026-08-29
 tags: [rk3588, amp, zephyr, shared-memory, cache, psci]
 related:
   - "[[experiment/exp-20260821-003-build-r1-psci-cpu-on-heartbeat]]"
@@ -343,6 +343,60 @@ Linux `mailmsg_ping` 写入 priority `0`、value `41`；`mailmsg_response` 返�
 
 本步骤仅验证 CRC32 V2 的板端正常路径（一次 ch0 PING/PONG）。payload 篡改后的拒收仍只有通用 host C unit test 证据；本步骤不证明板端篡改拒收、故障恢复、其他 priority、并发、压力或长期稳定性。
 
+### 步骤 32：RAM-only MailMsg V2 CRC fault candidate
+
+目的与预期结果：在不改变持久化启动介质的前提下，使用测试专用注入验证 V2 对 payload 损坏的检测/拒收，并观察坏帧对同一 priority ring 及其他 priority ring 的影响。
+
+Linux test-only injection 在 CRC 计算完成、producer 发布前翻转 payload；该注入不代表正常发送路径。正常 priority 0 value `41` 仍返回 PONG `42`。注入后 Zephyr 可观察到 `CRCE/0/-4/1`，没有 PONG，CPU3 heartbeat 持续。
+
+随后在同一 priority 0 ring 发送正常 value `200`，仍无响应；在 priority 1 发送 value `300`，得到 PONG `301`。本次观察表明坏帧留在队头时会堵住同一 priority 的后续消息，而 priority 1 ring 仍可独立处理；不扩展为通用调度或恢复语义。
+
+本步骤已验证板端 CRC V2 的检测、拒收和 priority ring 隔离。原地恢复、丢帧/跳过、重试、重置等策略尚未定义或验证；也未验证并发、压力、长期稳定性或其他 priority 的故障处理。
+
+### 步骤 33：RAM-only MailMsg V3 可靠性策略回归
+
+目的与预期结果：在不改变持久化启动介质的前提下，验证 V3 固定的 priority 可靠性策略：priority 0/1 使用 ACK/NACK，priority 2/3 不使用 ACK/NACK；错误帧应释放 slot，协议不自动重传。
+
+主机构建输入为 RAM-only FIT `build/local/r1-mailmsg-v3-reliability/r1-mailmsg-v3-reliability.img`，SHA-256 为 `82cb3a1f1169602321ffc51978e5633d9fa72471b7210bf74211a4a41d346aed`；Zephyr `mailmsg-v3-reliability.bin` 大小 `41008 B`，SHA-256 为 `f217a3510f82fbf2a0ff7131fe66d8e93f6d2809ffc9d10ebf02e5a401d10e2b`。板端加载完整，`image=41008/41008`；CPU3 启动成功，状态为 `affinity=off(1) cpu_on_ret=0 current_el=4`。上述路径仅为 RAM-only 候选，未写启动分区或 U-Boot 环境。
+
+已观察到以下运行结果：
+
+1. priority 0 正常请求 `41` 收到 ACK：`type=3 sequence=1 peer_sequence=1 status=0`，随后收到 PONG：`type=2 sequence=2 value=42`。
+2. priority 0 的 CRC 注入请求原序列 `2` 收到 NACK：`type=4 sequence=3 peer_sequence=2 status=1`，没有 PONG。随后立即发送正常 priority 0 请求 `200`，收到 ACK：`type=3 sequence=4 peer_sequence=3 status=0`，以及 PONG：`type=2 sequence=5 value=201`。这证明已提交的坏帧释放 slot，未阻塞同一 priority 0 ring。
+3. priority 2 的 CRC 注入返回 `valid=0 reason=empty`，没有反馈消息；随后正常 priority 2 请求 `200` 仅收到 PONG：`priority=2 type=2 sequence=7 value=201`。这证明 best-effort priority 的坏帧立即丢弃并可继续处理后续消息。
+4. priority 1 正常请求 `300` 收到 ACK：`priority=1 valid=1 type=3 sequence=8 peer_sequence=7 status=0`，随后收到 PONG：`priority=1 valid=1 type=2 sequence=9 value=301`。CRC 注入请求 `400` 收到 NACK：`priority=1 valid=1 type=4 sequence=10 peer_sequence=8 status=1`，没有 PONG。
+
+本步骤已验证板端 V3 的固定策略：priority 0/1（本步骤均覆盖正常 ACK 与 CRC 错误 NACK）使用可靠反馈，priority 2（本步骤覆盖）不使用 ACK/NACK，错误帧释放 slot；priority 3 同属无反馈类但尚未板端验证。ACK 表示传输层校验/接收确认，不表示应用处理完成。自动重传明确未实现，后续由发送端策略决定重传、丢弃、降级或复位。本步骤未验证 priority 3、并发、压力、长期稳定性或 eMMC 持久化。
+
+### 步骤 34：RAM-only MailMsg V3 queue-full 回归
+
+目的与预期结果：在 CPU3 已启动且 Zephyr 尚未消费前，验证 p3 ring 的 7-slot 可用上限，以及第 8 条入队立即返回 `FULL`/空间不足而不覆盖已有消息。
+
+此前尝试在 CPU3 未启动时灌队列无效：Linux `start` 会在 PSCI `CPU_ON` 前重置共享协议区，源码与观察均确认这是测试顺序问题，不是丢帧。修正为先加载 Zephyr、执行 `start`，确认 `cpu_on_ret=0`、`current_el=4`，再进行入队。
+
+本次 RAM-only FIT 位于板端 `/userdata/r1-ram-boot-test/r1-mailmsg-v3-queue-full.img`，SHA-256 为 `6bec6de793ce20e770a2436db860fde7c362f335b22f52460aa2e2fe1e538d81`；Zephyr 位于 `/userdata/zephyr-test/mailmsg-v3-queue-full.bin`，大小 `41008 B`，SHA-256 为 `96dbf38cdcfa79f7d28afd48e6b8d6ed9e0b5f646b1a0ae06f704a74b498448d`。本次不写 eMMC。
+
+Zephyr 在首次 doorbell 前不消费；对 p3 test-only `mailmsg_queue_push` 连续写入 `1..7` 均成功，第 8 条返回 `No space left on device`，退出码为 `1`。随后执行 raw `doorbell 3 0`（不新增 MailMsg 帧）唤醒消费者，`mailmsg_response` 按序返回 7 条 p3 PONG：`seq1..7`、`value2..8`。
+
+该步骤已验证运行期 ring 有 8 个物理 slot、7 个可用 slot；`FULL` 立即非阻塞返回且不覆盖，已入队消息保留并在通知后按序消费。doorbell 仅为通知，不承载消息数据。队列满后的重试、丢弃、降级或报警仍由上层调用者决定，自动重传未实现。本步骤不覆盖并发、压力、长期稳定或持久化。
+
+### 步骤 35：RAM-only MailMsg V3 endpoint 集成回归
+
+目的与预期结果：在不改变持久化启动介质的前提下，验证 Linux 与 Zephyr 使用通用 endpoint API 完成四个 priority 的代表路径，并保留 CRC 注入测试钩子的错误反馈观察。
+
+主机新增通用 endpoint 层 `src/mailmsg/mailmsg_endpoint.{h,c}`：一次生命周期绑定 Linux/CPU3 角色和本端序号，提供发送（入队后调用通知）与接收；入队结果和通知结果分离。endpoint 不包含调度、线程、重传或业务策略。主机 endpoint、protocol、notify、mailbox0 四项测试通过；Zephyr 完整构建成功，固件大小 `41008 B`、SHA-256 为 `e999bb38cceaecfb56e9855b65fe1261ef175d2ad6bd3aa89b82d058aedf5c86`。Linux 测试驱动的正常 `mailmsg_ping`/`mailmsg_response` 已使用 endpoint API；CRC 注入和 queue-without-doorbell 仍保留为测试钩子的直接构帧路径。Linux Image 完整构建成功，SHA-256 为 `dbf6eb967759e5084059713f178b3ab0ef95410d85658703ba1476b089508ef1`，`vmlinux` 含 endpoint/ring 符号。
+
+本次 RAM-only FIT 为 `/userdata/r1-ram-boot-test/r1-mailmsg-endpoint.img`，大小 `38636544 B`，SHA-256 为 `56b9a8fe0f5aa0f130ab1a7ab17cc8c0a840953d6ef3a8bc6f24067e062741c`；配套 Zephyr 固件为 `/userdata/zephyr-test/mailmsg-endpoint.bin`。本次不写 eMMC。板端 Linux 为 `5.10.252`、`nproc=7`；Zephyr `image=41008/41008`，`cpu_on_ret=0`、`current_el=4`，心跳持续。
+
+板端正常请求结果如下：
+
+1. p0 输入 `41`：ACK `type=3 sequence=1 peer_sequence=1 status=0`，随后 PONG `type=2 sequence=2 value=42`。
+2. p1 输入 `100`：ACK `type=3 sequence=3 peer_sequence=2 status=0`，随后 PONG `type=2 sequence=4 value=101`。
+3. p2 输入 `200`：仅 PONG `type=2 sequence=5 value=201`。
+4. p3 输入 `300`：仅 PONG `type=2 sequence=6 value=301`。
+
+四个通道各为 `rx=1`、`tx=1`，通知结果均为 `SENT`。随后 p0 CRC 注入 `400` 返回 NACK `type=4 sequence=7 peer_sequence=5 status=1`，无 PONG；状态为 `CRCE`，CPU3 心跳继续。该错误路径仍是测试钩子的直接构帧，正常路径则经 endpoint API。由此验证当前候选的 p0/p1 ACK、p2/p3 无 ACK/NACK 代表路径及 p0 CRC 错误反馈；不将一次四通道回归扩展为并发、压力或完整产品验证。queue-full 本轮未重新测试，步骤 34 的 p3 正常及 FULL 代表路径结论保持不变；自动重传仍未实现。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -384,6 +438,10 @@ Linux `mailmsg_ping` 写入 priority `0`、value `41`；`mailmsg_response` 返�
 | RAM-only MailMsg V1 最小闭环 | MailMsg priority 0 消息经 mailbox0 ch0 通知后返回 PONG | FIT SHA-256 `e7c73a7d3628654badbd3a98559307f32325519043049a32d2abd39d19070400`；Zephyr SHA-256 `a2b386ebda0493c7aa72f7a7f07156af0872e51ee9874db2cb365a57ec9ebf46`；Linux `5.10.252`、`nproc=7`、CPU_ON ret=0、`current_el=4`；`priority=0 valid=1 type=2 sequence=1 value=42`；`m0c0=rx:1/0xb2a10000/0x0,tx:1/0`、`a2b_now=m0:0x0` | 通过（一次 RAM-only PING/PONG；未验证 priority 1–3、负载/并发、可靠性或 eMMC） |
 | MailMsg V1 连续四优先级消息 | 连续 priority 0–3 消息分别返回 value+1 且保持有效 | `p0 seq2 val11`、`p1 seq3 val21`、`p2 seq4 val31`、`p3 seq5 val41`，均 `type=2 valid=1`；m0c0–m0c3 分别收到对应 controller 数据，`a2b_now=m0:0` | 通过（一次连续四消息；不覆盖抢占、并发/高负载、队列满、长期稳定或大数据） |
 | RAM-only MailMsg V2 ch0 正常路径 | V2 帧经 mailbox0 ch0 完成一次 PING/PONG，CRC32 正常路径可运行 | 修正 DTS loader size `0x9030→0xa030` 后，`image=41008/41008`；`CPU_ON ret=0`；`type=2 seq=1 value=42`；`m0c0 rx 0xb2a10000/0x0, tx 1/0`，pending `0` | 通过（仅板端 CRC V2 正常路径；篡改拒收仍仅 host unit test） |
+| RAM-only MailMsg V2 CRC fault candidate | 注入 payload 损坏后板端拒收，且其他 priority ring 可继续处理 | CRC 计算后/producer 发布前翻转 payload；Zephyr `CRCE/0/-4/1`、无 PONG、CPU3 heartbeat 持续；priority 0 后续 value `200` 无响应；priority 1 value `300→301` | 通过（板端检测/拒收/priority ring 隔离；恢复、丢帧/重试/重置未定义且未验证） |
+| RAM-only MailMsg V3 可靠性策略 | priority 0/1 ACK/NACK，priority 2/3 无反馈；错误帧释放 slot；不自动重传 | FIT `82cb3a1f…d346aed`；Zephyr `41008 B`、SHA-256 `f217a351…d10e2b`；`image=41008/41008`、`CPU_ON ret=0`、`current_el=4`；p0 正常 `41`→ACK `type=3 seq=1 peer=1 status=0`→PONG `type=2 seq=2 value=42`；p0 CRC 注入原 seq2→NACK `type=4 seq=3 peer=2 status=1`、无 PONG，随后 p0 `200`→ACK `type=3 seq=4 peer=3 status=0`→PONG `seq=5 value=201`；p1 正常 `300`→ACK `type=3 seq=8 peer=7 status=0`→PONG `type=2 seq=9 value=301`，CRC 注入原 seq8→NACK `type=4 seq=10 peer=8 status=1`、无 PONG；p2 CRC 注入 `valid=0 reason=empty`，随后 p2 `200`→PONG `type=2 seq=7 value=201` | 通过（板端验证 p0/p1 可靠 ACK/NACK、坏帧释放 slot、p2 无反馈/立即丢弃；未覆盖 p3、自动重传、并发/压力或 eMMC） |
+| RAM-only MailMsg V3 queue-full | p3 ring 达到 7 条可用上限后第 8 条立即 FULL，不覆盖；通知后 7 条按序消费 | FIT `/userdata/r1-ram-boot-test/r1-mailmsg-v3-queue-full.img` SHA-256 `6bec6de793ce20e770a2436db860fde7c362f335b22f52460aa2e2fe1e538d81`；Zephyr `41008 B` SHA-256 `96dbf38cdcfa79f7d28afd48e6b8d6ed9e0b5f646b1a0ae06f704a74b498448d`；`cpu_on_ret=0/current_el=4`；p3 push `1..7` 成功，第 8 条 `No space left on device`、exit `1`；raw `doorbell 3 0` 后 PONG `seq1..7/value2..8` | 通过（p3 正常路径及 FULL 代表路径；不覆盖并发/压力/持久化；doorbell 仅通知） |
+| RAM-only MailMsg V3 endpoint 集成 | Linux/Zephyr endpoint API 完成 p0–p3 正常回归；p0 CRC 注入返回 NACK；通知均为 SENT | FIT `/userdata/r1-ram-boot-test/r1-mailmsg-endpoint.img`，38636544 B，SHA-256 `56b9a8fe0f5aa0f130ab1a7ab17cc8c0a840953d6ef3a8bc6f24067e062741c`；Zephyr `41008 B`，SHA-256 `e999bb38cceaecfb56e9855b65fe1261ef175d2ad6bd3aa89b82d058aedf5c86`；Linux `5.10.252`、`nproc=7`、`cpu_on_ret=0`、`current_el=4`；p0/p1 ACK+PONG、p2/p3 PONG、p0 CRC NACK 无 PONG，四通道 `rx=1 tx=1` | 通过（当前 mailbox0 四通道后端/代表路径；不覆盖并发/压力/queue-full 复测/完整产品） |
 
 ## 结论
 
@@ -398,6 +456,8 @@ Linux `mailmsg_ping` 写入 priority `0`、value `41`；`mailmsg_response` 返�
 补充结论：同一 MailMsg V1 RAM-only session 连续发送 priority/value `0/10`、`1/20`、`2/30`、`3/40` 后，依次收到 `p0 seq2 val11`、`p1 seq3 val21`、`p2 seq4 val31`、`p3 seq5 val41`，均 `type=2 valid=1`；m0c0–m0c3 分别收到对应映射，`a2b_now=m0:0`。这仅验证四 priority 独立映射和一次连续四消息 PING/PONG，不覆盖抢占调度、并发/高负载、队列满策略、长期稳定或大数据。
 
 补充结论：V2 前一次候选因旧 DTS sysfs loader size `0x9030` 对应的 `36,912 B` 上限触发 `cat: File too large`，固件被截断，结果无效。修正为 `0xa030` 后，Zephyr image 完整写入 `41008/41008`，`CPU_ON ret=0`；priority 0 value 41 返回 `type=2 seq=1 value=42`，`m0c0 rx 0xb2a10000/0x0, tx 1/0`，pending 为 0。该结果仅证明板端 CRC V2 正常路径一次运行；payload 篡改拒收仍仅由 host unit test 证明，不扩展为板端拒收或故障恢复。
+
+补充结论：2026-08-28 RAM-only V2 CRC fault candidate 中，Linux test-only injection 在 CRC 计算后、producer 发布前翻转 payload；正常 priority 0 value `41→42`，注入后 Zephyr 观察 `CRCE/0/-4/1`、无 PONG且 CPU3 heartbeat 持续。随后 priority 0 value `200` 仍无响应，priority 1 value `300→301` 正常返回。由此仅确认板端检测/拒收、坏帧对同 priority 队头的阻塞现象以及 priority ring 隔离；原地恢复、丢帧/跳过、重试、重置等策略未定义且未验证，不做技术根因扩展。
 
 ## 关联知识与问题
 
@@ -415,6 +475,8 @@ Linux `mailmsg_ping` 写入 priority `0`、value `41`；`mailmsg_response` 返�
 
 补充结论：同一可重复 RAM candidate 上 ch0/ch1/ch2 均完成发送、CPU3 回执并清 pending；`ACKC/0x4/0x0/0x4` 按定义直接记录 ch2 的写前 status、写后回读和掩码。结合此前 ch3 的 `ACKC/0x8/0x0/0x8`，至少 ch2/ch3 的清除已有直接观测，四通道独立闭环可复用；不宣称并发、高吞吐或 mailbox1/2 已验证。
 
+补充结论：2026-08-28 RAM-only MailMsg V3 reliability candidate 已完成板端回归。FIT `build/local/r1-mailmsg-v3-reliability/r1-mailmsg-v3-reliability.img` SHA-256 为 `82cb3a1f1169602321ffc51978e5633d9fa72471b7210bf74211a4a41d346aed`，Zephyr `mailmsg-v3-reliability.bin` 为 `41008 B`、SHA-256 `f217a3510f82fbf2a0ff7131fe66d8e93f6d2809ffc9d10ebf02e5a401d10e2b`；板端 `image=41008/41008`、`affinity=off(1)`、`cpu_on_ret=0`、`current_el=4`。priority 0 正常 `41` 返回 ACK `type=3 sequence=1 peer_sequence=1 status=0` 后 PONG `type=2 sequence=2 value=42`；CRC 注入原序列 2 返回 NACK `type=4 sequence=3 peer_sequence=2 status=1` 且无 PONG，随后正常 `200` 返回 ACK `type=3 sequence=4 peer_sequence=3 status=0` 与 PONG `type=2 sequence=5 value=201`，证明坏帧释放 slot 且不阻塞 p0。priority 1 正常 `300` 返回 ACK `type=3 sequence=8 peer_sequence=7 status=0` 后 PONG `type=2 sequence=9 value=301`；CRC 注入原序列 8 返回 NACK `type=4 sequence=10 peer_sequence=8 status=1` 且无 PONG。priority 2 CRC 注入返回 `valid=0 reason=empty` 且无反馈，随后正常 `200` 仅返回 PONG `priority=2 type=2 sequence=7 value=201`，证明 best-effort 错误帧立即丢弃并可继续处理。该证据验证 p0/p1 可靠 ACK/NACK、p0 坏帧释放 slot 及 p2 无反馈代表路径；ACK 是传输校验/接收确认，不是应用完成确认。priority 3、并发/压力、长期稳定、eMMC 及自动重传仍未验证；自动重传未实现，由发送端后续策略决定。队列满 `FULL` 的立即、非阻塞、不覆盖行为是设计边界，未在本步骤验证；重试、丢弃、降级或报警由上层调用者决定。
+
 - 支持：`EXP-20260821-003` 已验证的 Linux→Zephyr 单向共享页心跳和 cache 可见性。
 - 已验证：当前 RAM candidate 的八次顺序 Linux→Zephyr→Linux PING/response 与显式 cache-maintained 可见性；同一实例中一次 RKLLM 生成后仍完成 PING 回环。
 - 已验证（静态）：AMP DTS 的 `mbox-names`/`mboxes` 已编译进 DTB，RX/TX 分别指向 `mailbox0` 通道 0/3；未验证 client 驱动申请或消息传输。
@@ -431,4 +493,8 @@ Linux `mailmsg_ping` 写入 priority `0`、value `41`；`mailmsg_response` 返�
 
 ## 后续行动
 
-- [ ] 将通过主机 C 单元测试的协议 groundwork 接入 Linux↔CPU3 mailbox0 四通道原型，并先完成最小 RAM-only 上板验证；暂不接入 RPMsg。
+补充记录（2026-08-28，通知合并候选）：主机三项通知层单元测试与完整 ARM64 Image 编译通过。已生成并传板 RAM-only 候选 `r1-mailmsg-v3-notify-coalesce.img`（SHA-256 `f8709830d4411b620f02a1a2d29ec3f08d9f709c61cb22b18e27d93067fd3083`）及 Zephyr 固件（SHA-256 `c6fdf6a1f55b8e61dfb231c8a1e13e7cefe46789a7c06c090900a54f1a11e746`）；尚未上板运行。设计/实现语义为：通知层区分 `SENT`、`COALESCED`、`FAILED`；发送前若硬件 A2B_STATUS 对应 priority pending 位已置，则不调用 `mbox_send_message`、不占 Linux core TX 队列，直接标记 `COALESCED`，状态 `tx_ret=-EBUSY` 记录观察原因；其他后端失败保留负 errno。sysfs 入队成功但通知失败仍返回入队成功，通知不自动重传。`MAILMSG_TEST_HOLD_A2B_USEC=500000` 仅用于复现 pending，默认不开启。硬件 `COALESCED` 尚未验证。
+
+补充结论（2026-08-28，RAM-only 硬件验证）：在最终 FIT SHA-256 `f8709830d4411b620f02a1a2d29ec3f08d9f709c61cb22b18e27d93067fd3083` 上 CPU3 已启动。板端状态为 `m0c0=rx:1/0xb2a10000/0x0,tx:1/-16,notify:1/1/1/0`、`a2b_now=m0:0`、`mailmsg_notify=1`；最后通知结果为 `COALESCED`，发送计数 1、合并计数 1、失败计数 0，`-16` 是内核 `EBUSY` 作为观察到的门铃 pending 原因，不是消息入队失败。p0 两次连续请求分别返回 ACK `seq1 peer1 status0`、PONG `seq2 value101`，以及 ACK `seq3 peer2 status0`、PONG `seq4 value201`。该结果限于 mailbox0 ch0：第二条消息合并到既有 A2B pending 门铃且未占 Linux core TX 队列；不等价于高并发或压力测试。
+
+- [ ] 在不改变持久化启动介质的前提下，验证通知三态在并发、压力及其他 mailbox 通道下的边界；保持入队结果与通知结果分离，暂不自动重传、接入 RPMsg 或写入 eMMC。

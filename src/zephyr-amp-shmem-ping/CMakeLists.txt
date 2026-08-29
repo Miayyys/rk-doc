@@ -6,4 +6,5 @@ target_sources(app PRIVATE
   src/main.c
   src/early-checkpoint.S
   ../mailmsg/mailmsg.c
+  ../mailmsg/mailmsg_endpoint.c
 )

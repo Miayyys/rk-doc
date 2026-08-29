@@ -4,11 +4,12 @@
 
 #include <zephyr/cache.h>
 #include <zephyr/irq.h>
+#include <zephyr/kernel.h>
 #include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 
-#include "../../mailmsg/mailmsg.h"
+#include "../../mailmsg/mailmsg_endpoint.h"
 
 #define AMP_STATUS_ADDR       0x500ff000UL
 #define AMP_REQ_PAYLOAD_ADDR  (AMP_STATUS_ADDR + 0x40UL)
@@ -50,6 +51,14 @@
 #define MARK_GIC_ROUTES         0x52544553U   /* "RTES" */
 #define MARK_MATRIX_ISR         0x4d345249U   /* "M4RI" */
 #define MARK_A2B_CLEAR_PROBE    0x41434b43U   /* "ACKC" */
+#define MARK_MAILMSG_BAD_CRC    0x43524345U   /* "CRCE" */
+#define MARK_MAILMSG_INVALID    0x494e564cU   /* "INVL" */
+
+/* Test-only build override.  Keeping an A2B bit pending verifies that a
+ * second queued frame maps to COALESCED rather than a data-plane failure. */
+#ifndef MAILMSG_TEST_HOLD_A2B_USEC
+#define MAILMSG_TEST_HOLD_A2B_USEC 0U
+#endif
 
 #define RK3588_GICD_BASE       0xfe600000UL
 #define RK3588_GICD_SIZE       0x10000UL
@@ -142,10 +151,71 @@ static void mailmsg_store_payload_u32(uint8_t payload[4], uint32_t value)
 static mm_reg_t mailbox[RK3588_MAILBOX_CONTROLLERS];
 static mm_reg_t gicd;
 static volatile bool mailbox_irq_seen;
+static uint32_t mailmsg_rx_error_count;
+static bool mailmsg_endpoint_ready;
 static volatile struct amp_mbox_observation_line *const mailbox_observation =
 	(volatile struct amp_mbox_observation_line *)AMP_MBOX_OBS_ADDR;
 static volatile struct mailmsg_shared *const amp_queue =
 	(volatile struct mailmsg_shared *)AMP_QUEUE_ADDR;
+static struct mailmsg_endpoint cpu3_endpoint;
+
+static int mailmsg_cpu3_notify(void *context,
+			       enum mailmsg_priority priority)
+{
+	uint32_t pending;
+
+	(void)context;
+	pending = sys_read32(mailbox[0] + MAILBOX_B2A_STATUS);
+	if (pending & BIT(priority))
+		return MAILMSG_NOTIFY_COALESCED;
+
+	sys_write32(AMP_MBOX_PROTOCOL_ACK | priority,
+		    mailbox[0] + MAILBOX_B2A_CMD(priority));
+	sys_write32(priority, mailbox[0] + MAILBOX_B2A_DAT(priority));
+	amp_dsb();
+	return MAILMSG_NOTIFY_SENT;
+}
+
+static const struct mailmsg_notify_ops mailmsg_cpu3_notify_ops = {
+	.notify = mailmsg_cpu3_notify,
+};
+
+static const struct mailmsg_notify_endpoint mailmsg_cpu3_notify_endpoint = {
+	.ops = &mailmsg_cpu3_notify_ops,
+};
+
+static bool mailmsg_send_feedback(uint32_t priority, uint32_t type,
+				  uint32_t peer_sequence, uint32_t status)
+{
+	struct mailmsg_send_result result;
+	uint8_t payload[MAILMSG_FEEDBACK_BYTES] = { 0 };
+
+	mailmsg_store_payload_u32(&payload[MAILMSG_FEEDBACK_SEQUENCE_OFFSET],
+				  peer_sequence);
+	mailmsg_store_payload_u32(&payload[MAILMSG_FEEDBACK_STATUS_OFFSET],
+				  status);
+	return mailmsg_endpoint_send(&cpu3_endpoint,
+				     (enum mailmsg_priority)priority, type,
+				     payload, sizeof(payload), &result) ==
+		MAILMSG_ENDPOINT_OK;
+}
+
+static bool mailmsg_send_pong(uint32_t priority,
+			      const struct mailmsg_message *request)
+{
+	struct mailmsg_send_result result;
+	uint8_t payload[4];
+	uint32_t type;
+
+	type = request->type == MAILMSG_MSG_PING ?
+		MAILMSG_MSG_PONG : MAILMSG_MSG_NOP;
+	mailmsg_store_payload_u32(payload,
+		mailmsg_payload_u32(request->payload) + 1U);
+	return mailmsg_endpoint_send(&cpu3_endpoint,
+				     (enum mailmsg_priority)priority, type,
+				     payload, sizeof(payload), &result) ==
+		MAILMSG_ENDPOINT_OK;
+}
 
 static void mailmsg_enable_a2b_channels(void)
 {
@@ -190,35 +260,47 @@ static void mailmsg_pingpong_test_service(void)
 {
 	uint32_t priority;
 
-	mailmsg_queue_acquire((const void *)amp_queue, sizeof(*amp_queue));
-	if (amp_queue->magic != MAILMSG_PROTOCOL_MAGIC ||
-	    amp_queue->version != MAILMSG_PROTOCOL_VERSION)
+	if (!mailmsg_endpoint_ready)
 		return;
 
 	for (priority = 0; priority < MAILMSG_PRIORITY_COUNT; priority++) {
 		struct mailmsg_message request;
-		struct mailmsg_message response = { 0 };
-		bool replied = false;
+		int pop_ret;
 
-		while (!mailmsg_ring_pop((struct mailmsg_ring *)&amp_queue->linux_to_cpu3[priority],
-					&mailmsg_queue_memory_ops, &request)) {
-			response.type = request.type == MAILMSG_MSG_PING ?
-				MAILMSG_MSG_PONG : MAILMSG_MSG_NOP;
-			response.sequence = request.sequence;
-			response.length = 4;
-			mailmsg_store_payload_u32(response.payload,
-				mailmsg_payload_u32(request.payload) + 1U);
-			if (mailmsg_ring_push((struct mailmsg_ring *)&amp_queue->cpu3_to_linux[priority],
-					     &mailmsg_queue_memory_ops, &response))
+		for (;;) {
+			pop_ret = mailmsg_endpoint_receive(
+				&cpu3_endpoint, (enum mailmsg_priority)priority,
+				&request);
+			if (pop_ret) {
+				if (pop_ret == MAILMSG_RING_BAD_CRC ||
+				    pop_ret == MAILMSG_RING_INVALID) {
+					uint32_t reason = pop_ret == MAILMSG_RING_BAD_CRC ?
+						MAILMSG_NACK_BAD_CRC :
+						MAILMSG_NACK_INVALID_FRAME;
+
+					if (mailmsg_priority_is_reliable(priority))
+						(void)mailmsg_send_feedback(
+							priority, MAILMSG_MSG_NACK,
+							request.sequence, reason);
+					mailmsg_rx_error_count++;
+					mailbox_observation->a2b_status = priority;
+					mailbox_observation->command = reason;
+					mailbox_observation->data = mailmsg_rx_error_count;
+					mailbox_observation->magic =
+						pop_ret == MAILMSG_RING_BAD_CRC ?
+						MARK_MAILMSG_BAD_CRC : MARK_MAILMSG_INVALID;
+					(void)sys_cache_data_flush_range(
+						(void *)mailbox_observation,
+						AMP_CACHE_LINE_SIZE);
+					amp_dsb();
+				}
 				break;
-			replied = true;
-		}
+			}
 
-		if (replied) {
-			sys_write32(AMP_MBOX_PROTOCOL_ACK | priority,
-				    mailbox[0] + MAILBOX_B2A_CMD(priority));
-			sys_write32(priority, mailbox[0] + MAILBOX_B2A_DAT(priority));
-			amp_dsb();
+			if (mailmsg_priority_is_reliable(priority))
+				(void)mailmsg_send_feedback(priority, MAILMSG_MSG_ACK,
+						    request.sequence, 0U);
+			(void)mailmsg_send_pong(priority, &request);
 		}
 	}
 }
@@ -245,6 +327,13 @@ static void mailmsg_mailbox_a2b_matrix_isr(const void *arg)
 		sys_write32(data, mailbox[controller] + MAILBOX_B2A_DAT(channel));
 		amp_dsb();
 	}
+
+	/* Never enable this in a production image: it deliberately holds the
+	 * corresponding level IRQ pending only long enough for a host test to
+	 * submit a second frame on the same priority. */
+	if (MAILMSG_TEST_HOLD_A2B_USEC &&
+	    (command & 0xfffffff0U) == AMP_MBOX_PROTOCOL_CMD && !channel)
+		k_busy_wait(MAILMSG_TEST_HOLD_A2B_USEC);
 
 	/*
 	 * The isolated probe established remote-side W1C on mailbox0 ch3.
@@ -334,6 +423,13 @@ int main(void)
 		   K_MEM_CACHE_NONE);
 	device_map(&gicd, RK3588_GICD_BASE, RK3588_GICD_SIZE,
 		   K_MEM_CACHE_NONE);
+	mailmsg_endpoint_ready =
+		mailmsg_endpoint_bind(&cpu3_endpoint,
+				      (struct mailmsg_shared *)amp_queue,
+				      &mailmsg_queue_memory_ops,
+				      &mailmsg_cpu3_notify_endpoint,
+				      MAILMSG_ENDPOINT_CPU3) ==
+		MAILMSG_ENDPOINT_OK;
 	mailmsg_enable_a2b_channels();
 	mailmsg_snapshot_gic_routes();
 	irq_enable(RK3588_MBOX_A2B_IRQ_FOR(0)); irq_enable(RK3588_MBOX_A2B_IRQ_FOR(1));
@@ -377,7 +473,12 @@ int main(void)
 			last_sequence = sequence;
 		}
 
-		mailmsg_pingpong_test_service();
+		/* The normal data-plane contract is queue then doorbell.  Do not poll
+		 * a fresh queue before its first interrupt: it lets the queue-full
+		 * probe hold the consumer deterministically, and keeps this test
+		 * responder aligned with the notification abstraction. */
+		if (mailbox_irq_seen)
+			mailmsg_pingpong_test_service();
 
 		if (++spin == 1000000U) {
 			r1_amp_checkpoint_c(MARK_HEARTBEAT |

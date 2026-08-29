@@ -4,7 +4,12 @@
 
 #include "mailmsg_notify.h"
 
-/* Platform glue supplies one raw mailbox doorbell primitive. */
+/*
+ * Platform glue supplies one mailbox doorbell primitive.  It normalizes a
+ * successfully submitted doorbell to MAILMSG_NOTIFY_SENT and a busy pending
+ * hardware channel to MAILMSG_NOTIFY_COALESCED.  Other negative errno-style
+ * values remain notification failures.
+ */
 typedef int (*mailmsg_mailbox_send_fn)(void *context, mailmsg_u32 channel,
 				      mailmsg_u32 command, mailmsg_u32 data);
 

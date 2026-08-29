@@ -1,122 +1,110 @@
 ---
-title: "MailMsg 通信协议设计"
+title: "MailMsg 协议设计说明"
 type: note
 status: draft
 created: 2026-08-27
-updated: 2026-08-27
+updated: 2026-08-29
 tags: [rk3588, amp, ipc, mailmsg, shared-memory]
 aliases: ["MailMsg protocol"]
 related:
   - "[[decision/dec-20260827-001-name-mailmsg-amp-protocol]]"
+  - "[[decision/dec-20260828-001-define-mailmsg-priority-reliability]]"
   - "[[decision/dec-20260826-001-select-mailbox0-notification-layer]]"
   - "[[experiment/exp-20260822-001-build-r1-amp-shmem-ping]]"
 ---
 
-# MailMsg 通信协议设计
+# MailMsg 协议设计说明
 
-## 学习目标
+## 目标与边界
 
-能够根据本设计说明 MailMsg V2 的固定消息帧、队列拓扑、发布/消费可见性和通知契约，并区分 V1 历史基线、当前 V2 设计与板端待验证项。
+MailMsg 是面向 Linux+Zephyr AMP 的共享内存消息协议。它把消息数据放在预留共享内存中，把“有消息或状态变化”的提示交给可替换的通知后端，从而同时服务于低延迟控制消息和较大量数据交换。
 
-## 前置知识
+MailMsg 负责消息帧、队列、发布/消费可见性、完整性检查和传输结果反馈；它不负责应用任务调度、队列公平性、业务完成确认或自动重传。重试、丢弃、降级、报警和复位由上层调用者根据协议结果决定。RPMsg 不是当前主数据平面。
 
-- 共享内存与 cache maintenance。
-- SPSC ring 与 doorbell 通知。
+## 架构
 
-## 协议定位与非目标
-
-MailMsg 是基于共享内存的 AMP 通信协议：共享内存承载消息数据，通知后端仅提示对应队列有可处理内容。通知后端可替换，当前选择 mailbox0。
-
-协议不规定消费者的队列消费顺序、配额、公平性、丢弃/合并策略或应用任务调度；这些不属于 MailMsg ABI。
-
-## 队列与术语
-
-通信拓扑为双向 × 四 priority：Linux→Zephyr 和 Zephyr→Linux 两个方向各有 priority 0–3 队列。每个方向/priority 是一个 SPSC（single-producer, single-consumer）ring；每个 ring 有 8 个物理 slot，可用队列上限为 7，保留一个 slot 区分满与空。
+数据平面是共享内存，通知平面是抽象接口：
 
 ```text
-Linux → Zephyr: priority 0 | priority 1 | priority 2 | priority 3
-Zephyr → Linux: priority 0 | priority 1 | priority 2 | priority 3
-                 每个 ring：8 个物理 slot，最多使用 7 个
+生产者写入 frame → 共享内存 ring → 消费者读取 frame
+                         ↑
+              可替换 notify/receive_irq
 ```
 
-`slot` 是 ring 中的物理队列位置；`frame` 是 slot 中承载的消息帧。当前设计不把二者混称。
+当前通知后端为 Rockchip `mailbox0`。mailbox 的 `cmd`/`data` 只承载通知所需的 `u32` 元数据，不承载消息正文；因此 doorbell 是提示，不是消息本身。协议接口可抽象为 `notify(priority)` 和 `receive_irq(priority)`，后端可替换而不改变队列数据语义。
 
-## 固定消息帧与 ABI
+### Endpoint 抽象
 
-MailMsg ABI 当前为 V2，固定 frame 为 52 B，`version=2`，字段包括：
+通用 endpoint 层 `src/mailmsg/mailmsg_endpoint.{h,c}` 只负责一次生命周期内绑定 Linux 或 CPU3 角色、维护本端序号、发送和接收。发送的语义是先尝试入队，再调用通知；入队结果与通知结果分开返回。endpoint 不负责调度、线程、重传或业务策略。Zephyr 和 Linux 的正常 `mailmsg_ping`/`mailmsg_response` 路径使用该接口；CRC 注入和不发 doorbell 的队列测试仍是测试专用的直接构帧路径。
 
-| 字段 | 设计作用 |
+## 优先级队列
+
+Linux→Zephyr 与 Zephyr→Linux 两个方向各有四个独立队列：
+
+| priority | 名称 | 可靠性 |
+| ---: | --- | --- |
+| 0 | `critical` | 启用 ACK/NACK |
+| 1 | `control` | 启用 ACK/NACK |
+| 2 | `normal` | 不发送 ACK/NACK |
+| 3 | `best-effort` | 不发送 ACK/NACK，类似 UDP |
+
+每个方向/priority 是单生产者、单消费者（SPSC）ring。每个 ring 有 8 个物理 slot，但保留一个位置用于区分满和空，因此最多同时使用 7 个 slot。四个 priority 彼此独立；一个队列的满、坏帧或通知状态不应被解释为其他队列的状态。
+
+## 帧与可见性
+
+共享内存区头包含 `version`，用于标识当前 ABI；当前候选为 `version=3`，且 `version` 不是每帧字段。V3 的具体字节布局以实现 ABI 为准，每帧包含：
+
+| 字段 | 职责 |
 | --- | --- |
-| `version` | ABI 版本；当前为 `2` |
-| `type` | 消息类型 |
-| `sequence` | 消息序号 |
-| `length` | payload 有效长度 |
-| `payload32` | 32 B payload 区域 |
-| `commit` / `ready` | 发布/就绪标记 |
-| `crc32` | 帧完整性校验字段 |
+| `type` | 区分数据、ACK、NACK 等消息类型 |
+| `sequence` | 标识本端消息，用于反馈关联 |
+| `length` | 表示 payload 有效长度 |
+| `payload[32]` | 承载消息内容的 payload 区域 |
+| `crc32` | 检查帧内容完整性 |
+| `commit` | 表示帧已按顺序发布，可被消费 |
 
-字段的具体字节偏移和各字段宽度以 V2 实现为准；本设计不在未确认处补写布局细节。此前 V1 固定 frame 为 48 B，是不含 V2 `version=2` 与 `crc32` 的历史基线；V2 当前固定 frame 为 52 B。
+V1 的 48 B frame 和 V2 的 `version=2`、`crc32`、52 B frame 是历史验证 ABI；当前协议为 V3 draft，版本由共享区头表达。当前模型只有 `commit` 发布标记，不存在 `commit`/`ready` 二选一；它不能替代 CRC32。CRC32 只检查完整性，不能表示应用已经完成处理。
 
-| ABI | 固定 frame 大小 | 版本/完整性字段 | 状态 |
-| --- | ---: | --- | --- |
-| V1（历史基线） | 48 B | 不含 V2 `version=2` 与 `crc32` | 曾有 RAM-only PING/PONG evidence |
-| V2（当前） | 52 B | `version=2`、`crc32` | 主机单元测试与 Linux/Zephyr V2 构建通过；板端仅验证一次 ch0 CRC 正常路径 |
-
-`commit`/`ready` 是必要的发布标记，用来表示 frame 已按协议顺序发布；它不是 CRC，也不能替代 CRC32。CRC32 是独立的帧完整性字段。
-
-## 发布、消费与内存可见性
-
-生产者按以下顺序发布消息：
+生产者发布顺序为：
 
 ```text
-写 frame 内容 → cache flush/clean → barrier → 发布 commit/ready → notify(priority)
+写入 frame（含 `commit` 未发布状态）→ cache flush/clean → barrier → 发布 `commit` → notify(priority)
 ```
 
-消费者收到通知或主动检查后，按以下顺序读取：
+消费者收到通知或主动检查后，应执行：
 
 ```text
-receive_irq(priority)/检查 → barrier → cache invalidate → 读取 commit/ready 与 frame → 校验
+receive_irq(priority)/检查 → barrier → cache invalidate → 读取 `commit` 与 frame → 校验并消费
 ```
 
-共享内存不是网络发包，因此也不会自动消除并发或缓存观察问题。生产者与消费者若缺少正确的发布顺序、barrier 或 cache flush/invalidate，可能观察到未完整数据或旧数据。`commit`/`ready` 只表示发布状态；它不能证明 payload 未被破坏。V2 的 CRC32 校验已在主机单元测试覆盖 payload 损坏拒绝，但板端行为仍待验证。
+缺少 cache 维护、barrier 或正确发布顺序时，消费者可能看到旧数据或未完整数据。
 
-## 通知契约
+## 通知结果
 
-协议层通知接口抽象为：
+通知层区分三态：
 
-- `notify(priority)`：提示指定 priority 队列发生可处理状态变化。
-- `receive_irq(priority)`：接收指定 priority 的通知并触发队列检查。
+- `SENT`：已提交通知。
+- `COALESCED`：消息已经成功入队，但对应 priority 的硬件 A2B pending 位已置；后端不调用 `mbox_send_message`，也不占 Linux core TX 队列，直接合并到已有 doorbell，并在状态中以 `tx_ret=-EBUSY` 记录观察原因。该状态不是入队失败。
+- `FAILED`：通知后端失败；具体后端的负 errno 保留，供上层诊断。
 
-mailbox 是当前 doorbell 后端，不是 MailMsg 数据面。当前 mailbox `cmd` 和 `data` 各为一个 `u32`，只承载通知所需元数据；消息内容位于共享内存 frame。通知后端可替换为其他机制而不改变队列 ABI，但具体后端映射仍需单独定义和验证。
+sysfs 入口的入队结果与通知结果分离：入队成功但通知失败或合并时，入口仍报告入队成功，状态文件记录规范化通知状态和计数。通知层不自动重传。
 
-## 完整性与错误模型
+## 可靠性与错误处理
 
-当前可识别的发布状态由 `commit`/`ready` 提供；sequence 和 length 用于消息关联与有效长度表达。V2 使用 `crc32` 检查帧完整性；主机测试已验证 payload corruption → reject，不能据此宣称板端具备故障恢复。
+priority 0/1 收到完整且 CRC 正确的帧后发送 ACK；CRC 或其他有效性错误的帧均立即从所属 ring 消费并释放 slot，priority 0/1 另发送关联原消息 `sequence` 和错误码的 NACK。ACK/NACK 是传输层校验/接收结果，不是应用完成确认。priority 2/3 不发送 ACK/NACK；错误帧直接丢弃，避免阻塞队头。
 
-以下策略不属于已冻结 ABI，均待实现或验证：sequence 异常、length 越界、空/满 ring、通知丢失、重复通知、CRC32 失败后的超时、重试和恢复。
+协议不自动重传。发送端应用根据入队结果、ACK/NACK、`sequence` 和错误码自行选择重传、丢弃、降级、报警或复位。
 
-## 兼容性与状态
+队列满时，协议/底层应立即、非阻塞地报告 `FULL` 或对应错误，不等待，也不覆盖已有消息；后续处置完全由上层调用者决定。该语义已由 p3 代表路径验证，但并发或压力下的泛化仍待验证。
 
-- 当前协议设计状态：draft；ABI V2 使用 `version=2` 与 `crc32`，固定 frame 为 52 B。V1 的 48 B frame 保留为历史基线。
-- V2 验证状态：通用 host C unit test 已覆盖 payload corruption → reject 并通过；Linux kernel 与 Zephyr V2 构建通过；板端仅完成一次 ch0 CRC 正常路径闭环。板端 payload 篡改拒收与故障恢复仍无证据。
-- 当前 ring 模型：双向四 priority、SPSC、每 ring 8 个物理 slot/可用上限 7。
-- 当前通知后端：mailbox0；其他后端保持可替换设计。
-- 已有实验只作为最简 evidence：`EXP-20260822-001` 记录过 V1 MailMsg priority 0 PING/PONG 和一次连续 priority 0–3 测试应用映射；该证据不证明 V2 CRC32 的板端行为、故障恢复或压力边界。
-- 待实现/待验证：板端 CRC 篡改拒收与错误处理、大数据 buffer pool、endpoint、多生产者/消费者、背压、超时/恢复、并发/压力、长期稳定和大数据传输。
+## 当前实现与证据范围
 
-## 关联问题
+V3 当前 endpoint 集成的 mailbox0 四通道后端代表路径已完成 RAM-only 板端验证：四个 priority 的正常消息均按其固定策略返回，p0 的 CRC 坏帧返回 NACK 且无 PONG；p0/p1 ACK/NACK、p2 无反馈、p3 正常路径及 queue-full 代表路径，以及 mailbox0 ch0 的 `COALESCED` 也已有相应实验记录。主机 endpoint/protocol/notify/mailbox0 测试和完整 ARM64 Image 构建已通过。上述结果证明代表路径的协议语义，不等于完整产品验证。
 
-暂无。
+尚未由这些实验覆盖的范围包括：并发、高负载、长期稳定性、吞吐性能、完整通道组合、eMMC 持久化、通知异常的压力边界和自动重传。队列满本轮未重新测试；详细镜像、校验值、命令输出及逐次排障过程保留在[共享内存 PING 实验记录](../experiment/exp-20260822-001-build-r1-amp-shmem-ping.md)中。
 
-## 总结
+## 参考决策
 
-- MailMsg 的数据面是双向四 priority 的共享内存 SPSC ring。
-- 每个 ring 有 8 个物理 slot，可用上限为 7；slot 与 frame 是不同术语。
-- 发布必须遵守 frame 写入、cache flush/clean、barrier、commit/ready、通知的顺序。
-- `commit`/`ready` 是必要发布标记，不是 CRC，也不是 CRC32 的替代；V2 `crc32` 已纳入 ABI，但板端仍待验证。
-- mailbox 当前只负责 doorbell，`cmd/data` 各为 `u32`，不承载消息正文。
-
-## 参考资料
-
-- [EXP-20260822-001：构建 R1 Linux-Zephyr 共享内存 PING 原型](../experiment/exp-20260822-001-build-r1-amp-shmem-ping.md)，2026-08-27。
-- [DEC-20260827-001：将 AMP 主协议正式命名为 MailMsg](../decision/dec-20260827-001-name-mailmsg-amp-protocol.md)，2026-08-27。
+- [DEC-20260827-001：将 AMP 主协议正式命名为 MailMsg](../decision/dec-20260827-001-name-mailmsg-amp-protocol.md)
+- [DEC-20260828-001：定义 MailMsg V3 按优先级固定可靠策略](../decision/dec-20260828-001-define-mailmsg-priority-reliability.md)
+- [DEC-20260826-001：选择 mailbox0 四通道作为 AMP 通知层](../decision/dec-20260826-001-select-mailbox0-notification-layer.md)

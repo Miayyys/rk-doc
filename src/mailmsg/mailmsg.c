@@ -45,12 +45,14 @@ int mailmsg_ring_pop(struct mailmsg_ring *ring, const struct mailmsg_memory_ops 
 	ops->acquire(slot, sizeof(*slot));
 	if (slot->commit != slot->sequence)
 		return MAILMSG_RING_INCOMPLETE;
-	if (!slot->sequence || slot->length > MAILMSG_PAYLOAD_BYTES)
-		return MAILMSG_RING_INVALID;
-	if (slot->crc32 != mailmsg_frame_crc32(slot))
-		return MAILMSG_RING_BAD_CRC;
 	*message = *slot;
 	ring->consumer = mailmsg_next(consumer);
 	ops->publish(&ring->consumer, sizeof(ring->consumer));
+	/* A committed slot is always released promptly.  Non-OK results leave
+	 * message payload untrusted, but retain sequence for an optional NACK. */
+	if (!message->sequence || message->length > MAILMSG_PAYLOAD_BYTES)
+		return MAILMSG_RING_INVALID;
+	if (message->crc32 != mailmsg_frame_crc32(message))
+		return MAILMSG_RING_BAD_CRC;
 	return 0;
 }
