@@ -415,6 +415,16 @@ Zephyr 在首次 doorbell 前不消费；对 p3 test-only `mailmsg_queue_push` �
 
 正常 endpoint p0 发送 `600..603` 均退出码 `0`。板端 response 依次为 ACK/PONG：ACK `sequence=1`、PONG `sequence=2 value=601`；ACK `sequence=3`、PONG `sequence=4 value=602`；ACK `sequence=5`、PONG `sequence=6 value=603`；以及 ACK `sequence=7 peer_sequence=4`。随后状态为 `mailmsg_tx_full valid=1 commit=2 count=1 priority=0 type=2 result=-2`。这确认反向 PONG 入队在已有 7 个 response frame 后出现一次 TX-full 观测（`count:1`）；状态只作报告，未引入自动重传、重排、丢弃或其他策略变化。
 
+### 步骤 38：RAM-only MailMsg V3 用户态字符设备回归
+
+目的与预期结果：在不改变持久化启动介质的前提下，首次验证用户态 priority-scoped 字符设备的 `write`、`poll`、`read` 代表路径，并避免旧 sysfs 接口与字符设备同时消费同一响应队列。
+
+本次事件时间为 2026-08-29。RAM-only FIT 为 `build/local/r1-mailmsg-endpoint/r1-mailmsg-userdev-external.img`，大小 `38636544 B`，SHA-256 为 `4daeab6d92b2450b4e31e992ec7607b0e6890e9d134b225901eb5016234c87cf`。候选启动到 Linux `5.10.252`、`nproc=7`；加载 Zephyr `mailmsg-userdev.bin` 并执行 PSCI start 后，板端出现 `/dev/mailmsg-p0`、`/dev/mailmsg-p1`、`/dev/mailmsg-p2`、`/dev/mailmsg-p3`。本次未读取旧 sysfs `mailmsg_response`，以避免双消费者。
+
+使用静态 AArch64 client 经字符设备 p0 写入 PING `41`，再通过 `poll/read` 得到：ACK `priority=0 type=3 sequence=1 length=8 peer_sequence=1 status=0`，随后 PONG `priority=0 type=2 sequence=2 length=4 value=42`。经 p2 写入 PING `100`，通过 `poll/read` 得到 PONG `priority=2 type=2 sequence=3 length=4 value=101`，符合 p2 无 ACK/NACK 的策略。
+
+本步骤验证字符设备按 priority 隔离的 `write`/`poll`/`read` 两条代表路径；p1/p3、`O_NONBLOCK`、poll timeout、`ENOSPC`、并发及 driver unbind 仍未验证。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -462,6 +472,7 @@ Zephyr 在首次 doorbell 前不消费；对 p3 test-only `mailmsg_queue_push` �
 | RAM-only MailMsg V3 endpoint 集成 | Linux/Zephyr endpoint API 完成 p0–p3 正常回归；p0 CRC 注入返回 NACK；通知均为 SENT | FIT `/userdata/r1-ram-boot-test/r1-mailmsg-endpoint.img`，38636544 B，SHA-256 `56b9a8fe0f5aa0f130ab1a7ab17cc8c0a840953d6ef3a8bc6f24067e062741c`；Zephyr `41008 B`，SHA-256 `e999bb38cceaecfb56e9855b65fe1261ef175d2ad6bd3aa89b82d058aedf5c86`；Linux `5.10.252`、`nproc=7`、`cpu_on_ret=0`、`current_el=4`；p0/p1 ACK+PONG、p2/p3 PONG、p0 CRC NACK 无 PONG，四通道 `rx=1 tx=1` | 通过（当前 mailbox0 四通道后端/代表路径；不覆盖并发/压力/queue-full 复测/完整产品） |
 | RAM-only MailMsg V3 混合突发与满队列隔离 | test-only 预填四个 priority 后 raw doorbell 按 FIFO 消费；p3 满队列后 p0 仍可正常 endpoint 入队/通知/消费 | 第一段 p0/p1 ACK+PONG、p2/p3 PONG，分别返回 `101..103`、`201..203`、`301..307`、`401..407`；第二段 p3 `500..506` 入队，第 8 条 `507` 返回 `ENOSPC` exit `1`，p0 `900` ACK `seq1 peer9`/PONG `seq2 value901`，p3 PONG `seq3..9/value501..507`；m0c0 `SENT`、m0c3 raw doorbell、`a2b_now=0` | 通过（当前 mailbox0 四通道后端/代表路径；不覆盖并发/公平性/抢占/吞吐延迟/长期稳定/自动重传/大载荷/eMMC） |
 | RAM-only MailMsg V3 TX-full 观测 | 修正为外置数据 FIT 后完成 RAM boot，并观察反向 PONG 入队满状态 | FIT `/userdata/r1-ram-boot-test/r1-mailmsg-tx-full-observation-external.img`，SHA-256 `5ebf4a8222d343cdc319311ea18ebf1e376f6ec8a2ecbd08f154b9f25f7eec0c`；Zephyr `41008 B`，SHA-256 `8aab1e3fc0838f36e840ab4ec551164020942a43363152287d87641a2bfd6a99`；p0 `600..603` 均 exit `0`，ACK/PONG `601..603` 后 ACK `seq7 peer4`；`mailmsg_tx_full valid=1 commit=2 count=1 priority=0 type=2 result=-2` | 通过（TX-full 诊断观察；不改变重试/重排/丢弃策略） |
+| RAM-only MailMsg V3 用户态字符设备 | `/dev/mailmsg-p0..p3` 提供 priority-scoped write/poll/read；p0 有 ACK/PONG，p2 仅 PONG | FIT `build/local/r1-mailmsg-endpoint/r1-mailmsg-userdev-external.img`，38636544 B，SHA-256 `4daeab6d92b2450b4e31e992ec7607b0e6890e9d134b225901eb5016234c87cf`；Linux `5.10.252`、`nproc=7`；p0 PING `41`→ACK `type=3 seq=1 peer=1 status=0`/PONG `seq=2 value=42`，p2 PING `100`→PONG `type=2 seq=3 value=101`；未读取旧 sysfs `mailmsg_response` | 通过（p0/p2 代表路径；不覆盖 p1/p3、O_NONBLOCK、poll timeout、ENOSPC、并发或 driver unbind） |
 
 ## 结论
 

@@ -54,4 +54,7 @@ int mailmsg_endpoint_receive(struct mailmsg_endpoint *endpoint,
 			     enum mailmsg_priority priority,
 			     struct mailmsg_message *message);
 
+int mailmsg_endpoint_has_received(struct mailmsg_endpoint *endpoint,
+				  enum mailmsg_priority priority);
+
 #endif

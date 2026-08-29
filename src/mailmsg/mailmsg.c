@@ -56,3 +56,13 @@ int mailmsg_ring_pop(struct mailmsg_ring *ring, const struct mailmsg_memory_ops 
 		return MAILMSG_RING_BAD_CRC;
 	return 0;
 }
+
+int mailmsg_ring_has_data(struct mailmsg_ring *ring,
+			  const struct mailmsg_memory_ops *ops)
+{
+	if (!ring || !ops || !ops->acquire)
+		return MAILMSG_RING_INVALID;
+
+	ops->acquire(&ring->producer, sizeof(ring->producer));
+	return ring->producer != ring->consumer;
+}

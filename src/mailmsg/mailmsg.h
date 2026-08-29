@@ -139,5 +139,7 @@ int mailmsg_ring_push(struct mailmsg_ring *ring, const struct mailmsg_memory_ops
 		     const struct mailmsg_message *message);
 int mailmsg_ring_pop(struct mailmsg_ring *ring, const struct mailmsg_memory_ops *ops,
 		    struct mailmsg_message *message);
+int mailmsg_ring_has_data(struct mailmsg_ring *ring,
+			  const struct mailmsg_memory_ops *ops);
 
 #endif

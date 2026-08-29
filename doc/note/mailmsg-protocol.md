@@ -37,6 +37,8 @@ MailMsg 负责消息帧、队列、发布/消费可见性、完整性检查和�
 
 通用 endpoint 层 `src/mailmsg/mailmsg_endpoint.{h,c}` 只负责一次生命周期内绑定 Linux 或 CPU3 角色、维护本端序号、发送和接收。发送的语义是先尝试入队，再调用通知；入队结果与通知结果分开返回。endpoint 不负责调度、线程、重传或业务策略。Zephyr 和 Linux 的正常 `mailmsg_ping`/`mailmsg_response` 路径使用该接口；CRC 注入和不发 doorbell 的队列测试仍是测试专用的直接构帧路径。
 
+Linux 用户态提供四个 priority-scoped 字符设备 `/dev/mailmsg-p0` 到 `/dev/mailmsg-p3`，以 `write` 提交本 priority 消息，并以 `poll`/`read` 获取响应。该入口与旧 sysfs 测试入口不能并行消费同一响应队列；已完成的板端证据只覆盖 p0 的 ACK/PONG 和 p2 的 PONG 代表路径，其他行为见实验记录中的未验证边界。
+
 ## 优先级队列
 
 Linux→Zephyr 与 Zephyr→Linux 两个方向各有四个独立队列：

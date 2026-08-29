@@ -92,3 +92,14 @@ int mailmsg_endpoint_receive(struct mailmsg_endpoint *endpoint,
 	return mailmsg_ring_pop(&endpoint->rx[priority], endpoint->memory_ops,
 				message);
 }
+
+int mailmsg_endpoint_has_received(struct mailmsg_endpoint *endpoint,
+				  enum mailmsg_priority priority)
+{
+	if (!endpoint || !endpoint->rx || !endpoint->memory_ops ||
+	    priority >= MAILMSG_PRIORITY_COUNT)
+		return MAILMSG_RING_INVALID;
+
+	return mailmsg_ring_has_data(&endpoint->rx[priority],
+				     endpoint->memory_ops);
+}

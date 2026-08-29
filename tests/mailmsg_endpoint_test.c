@@ -2,6 +2,10 @@
 #include <string.h>
 
 #include "../src/mailmsg/mailmsg_endpoint.h"
+#include "../src/mailmsg/mailmsg_user.h"
+
+_Static_assert(sizeof(struct mailmsg_user_frame) == 48,
+	       "MailMsg userspace frame ABI must remain fixed");
 
 static int notify_result;
 static int notify_count;
@@ -64,8 +68,12 @@ int main(void)
 	assert(send_result.sequence == 1);
 	assert(notify_count == 1);
 	assert(notified_priority == MAILMSG_PRIO_CONTROL);
+	assert(mailmsg_endpoint_has_received(&cpu3_endpoint,
+				     MAILMSG_PRIO_CONTROL));
 	assert(mailmsg_endpoint_receive(&cpu3_endpoint, MAILMSG_PRIO_CONTROL,
 					&message) == 0);
+	assert(!mailmsg_endpoint_has_received(&cpu3_endpoint,
+				      MAILMSG_PRIO_CONTROL));
 	assert(message.type == MAILMSG_MSG_PING);
 	assert(message.sequence == 1);
 	assert(message.payload[0] == 41);
