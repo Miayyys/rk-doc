@@ -451,6 +451,50 @@ exclusive-reader=pass second=EBUSY handoff=EAGAIN
 
 本步骤仅验证独占读、关闭后的接管、空 ring 返回及 p0 回归的代表路径；不据此宣称多进程发送压力、并发消费、业务交付正确性或长期稳定性已验证。
 
+### 步骤 41：RAM-only CPU3 live PSCI affinity 读取
+
+目的与预期结果：验证新 sysfs `affinity_state` 是否每次读取 fresh `PSCI_AFFINITY_INFO`，并区分 CPU3 启动前后的运行状态；本步骤只读，不进行任何 PSCI 写入。
+
+本次事件时间为 2026-08-30。使用 RAM-only FIT `/userdata/r1-ram-boot-test/r1-psci-affinity-refresh.img`，SHA-256 为 `d3bd61f923253db4e5c79936ec2c5e4aa31525a26d02c0f2de21288e865c8dbc`。Linux 启动后读取 `$amp/affinity_state` 得到：
+
+```text
+mpidr=0x300 level=0 state=off (1)
+```
+
+随后加载 `mailmsg-p3-hold.bin` 并执行 `start`；OP-TEE 显示 CPU3 init/switch。等待 1 秒再次读取 `$amp/affinity_state`，得到：
+
+```text
+mpidr=0x300 level=0 state=on (0)
+```
+
+由此仅确认该 sysfs 读取能够区分本次 CPU3 启动前的 `OFF (1)` 与启动后的 `ON (0)`，且读取路径使用 fresh `PSCI_AFFINITY_INFO`。本步骤未验证 `CPU_OFF`、rearm、重复装载，也不授权任何写入或改变 CPU 状态的操作。
+
+### 步骤 42：RAM-only CPU3 self-CPU_OFF
+
+目的与预期结果：验证 CPU3 在 Zephyr EL1 运行期间调用 Zephyr 官方 `pm_cpu_off` 后，Linux 是否能通过 fresh `PSCI_AFFINITY_INFO` 观察到 CPU3 进入 `OFF`；不验证后续重新启动或消息恢复。
+
+本次事件时间为 2026-08-30，使用 live-affinity RAM-only session。Zephyr 固件为 `mailmsg-selfoff.bin`，大小 `41008 B`，SHA-256 为 `ccf57c8f3fa8c5a6d3d2e5c07be54e987030d74d986dcb603f4043c33f4bf571`。CPU3 启动后 affinity 为 `ON`；执行 `/userdata/zephyr-test/mailmsg-user-client 0 0x4350554f --no-read`，退出码为 `0`。执行前共享状态 marker 可见；等待 1 秒后 fresh 读取 `$amp/affinity_state` 得到：
+
+```text
+mpidr=0x300 level=0 state=off (1)
+```
+
+随后 status 取到 `magic=0x53544f50`（`STOPPING`）。该结果仅确认 CPU3 在 Zephyr EL1 运行 Zephyr 官方 `pm_cpu_off` 后，执行前状态可见且 fresh PSCI 读取确认 CPU3 为 `OFF`。未验证 rearm、第二次镜像加载/`CPU_ON`、未完成事务处理、mailbox pending 恢复或业务可靠性。
+
+### 步骤 43：RAM-only CPU3 guarded rearm 端到端
+
+目的与预期结果：验证 CPU3 self-`CPU_OFF` 后，显式 guarded rearm 接口能在不自动启动 CPU 的情况下恢复到可再次加载并 `start` 的状态；不验证自动恢复、生产就绪或其他未覆盖功能。
+
+本次事件时间为 2026-08-30。在 live-affinity RAM-only session 中确认 rearm sysfs 存在，初始 fresh 读取 `$amp/affinity_state` 为：
+
+```text
+mpidr=0x300 level=0 state=off (1)
+```
+
+加载 `mailmsg-selfoff.bin` 并执行 `start` 后 state 为 `on`；执行 `/userdata/zephyr-test/mailmsg-user-client 0 0x4350554f --no-read` 退出码为 `0`，1 秒后 fresh `affinity_state` 为 `off (1)`，status 为 `magic=0x53544f50`（`STOPPING`）。执行 `printf rearm > rearm`，退出码为 `0`；随后 status 为 `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11`。之后重新加载 `mailmsg-p3-hold.bin` 并执行 `start`，state 再次为 `on`；运行用户态 client p0 `901`，得到 ACK 和业务响应 `value=902`，退出码为 `0`。
+
+该顺序仅确认显式 rearm 后可重新加载并 `start`，且 p0 代表路径返回 ACK/业务响应；没有证明自动恢复。未验证未完成事务处理、mailbox pending 恢复或其他业务可靠性。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -501,6 +545,9 @@ exclusive-reader=pass second=EBUSY handoff=EAGAIN
 | RAM-only MailMsg V3 用户态字符设备 | `/dev/mailmsg-p0..p3` 提供 priority-scoped write/poll/read；p0 有 ACK/PONG，p2 仅 PONG | FIT `build/local/r1-mailmsg-endpoint/r1-mailmsg-userdev-external.img`，38636544 B，SHA-256 `4daeab6d92b2450b4e31e992ec7607b0e6890e9d134b225901eb5016234c87cf`；Linux `5.10.252`、`nproc=7`；p0 PING `41`→ACK `type=3 seq=1 peer=1 status=0`/PONG `seq=2 value=42`，p2 PING `100`→PONG `type=2 seq=3 value=101`；未读取旧 sysfs `mailmsg_response` | 通过（p0/p2 代表路径；不覆盖 p1/p3、O_NONBLOCK、poll timeout、ENOSPC、并发或 driver unbind） |
 | RAM-only MailMsg V3 用户态 TX ring 满 | priority 3 SPSC TX ring 满时字符设备 `write` 返回 `-ENOSPC`；p3 饱和不阻塞 p0 代表路径 | 测试 Zephyr `mailmsg-p3-hold.bin` 刻意不消费 p3；`mailmsg-user-client 3 700..706 --no-read` 均 exit `0`；第 8 条 `707` 输出 `No space left on device`、exit `1`；随后 p0 `801` 得到 ACK `seq1 peer9 status0`、PONG `seq2 value802`，`p0_after_p3_full_exit=0` | 通过（仅本次 p3→p0 代表路径及 p3 7-slot/ENOSPC；不覆盖 p1/p2 或全优先级隔离、自动恢复或重试策略） |
 | RAM-only MailMsg 用户态独占读 | 每个 priority 的第一个接收者独占拥有 ring；第二个接收者返回 `EBUSY`；释放后可接管，空 ring 返回 `EAGAIN`；独占读改动后 p0 代表路径仍可用 | FIT `r1-mailmsg-exclusive-reader.img` SHA-256 `13945fb158825b414ac04e4950e22bed077ac3fdf607b5e8c06c15f1bf03c496`；板端 `exclusive-reader=pass second=EBUSY handoff=EAGAIN`、exit `0`；随后 p0 `901` 得到 ACK `seq1 peer1 status0`、PONG `seq2 value902`，`p0_regression_exit=0` | 通过（独占读及 p0 回归代表路径；多写者仅源码审查，不覆盖发送压力、并发消费、业务交付或长期稳定性） |
+| RAM-only CPU3 live PSCI affinity 读取 | 启动前读到 `OFF (1)`，CPU3 启动后读到 `ON (0)` | FIT `/userdata/r1-ram-boot-test/r1-psci-affinity-refresh.img` SHA-256 `d3bd61f923253db4e5c79936ec2c5e4aa31525a26d02c0f2de21288e865c8dbc`；启动前 `mpidr=0x300 level=0 state=off (1)`；CPU3 `start` 后 `mpidr=0x300 level=0 state=on (0)` | 通过（fresh `PSCI_AFFINITY_INFO` 只读观察；不覆盖 CPU_OFF、rearm、重复装载或任何写入） |
+| RAM-only CPU3 self-CPU_OFF | Zephyr EL1 执行 `pm_cpu_off` 后 fresh affinity 读到 `OFF (1)` | Zephyr `mailmsg-selfoff.bin`，41008 B，SHA-256 `ccf57c8f3fa8c5a6d3d2e5c07be54e987030d74d986dcb603f4043c33f4bf571`；`mailmsg-user-client 0 0x4350554f --no-read` exit `0`；1 秒后 `mpidr=0x300 level=0 state=off (1)`，status `magic=0x53544f50`（`STOPPING`） | 通过（仅本次 self-CPU_OFF 与 fresh 只读确认；不覆盖 rearm、第二次镜像加载/CPU_ON、未完成事务、mailbox pending 恢复或业务可靠性） |
+| RAM-only CPU3 guarded rearm 端到端 | self-CPU_OFF 后显式 rearm 不自动 CPU_ON；重新加载/`start` 后 CPU3 再次 ON，p0 代表路径可用 | 初始 fresh `affinity_state=off (1)`；首次 `start` 后为 `on`；self-CPU_OFF 后为 `off (1)`、`magic=0x53544f50`；`printf rearm > rearm` exit `0` 后 `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11`；重新加载 `mailmsg-p3-hold.bin`、`start` 后为 `on`；p0 `901` 返回 ACK/`value=902`、exit `0` | 通过（显式 rearm/重新启动及 p0 代表回归；不证明自动恢复、生产就绪、未完成事务或 mailbox pending 恢复） |
 
 ## 结论
 
