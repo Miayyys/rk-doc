@@ -39,8 +39,9 @@ int main(int argc, char **argv)
 	int fd, expected, index;
 	ssize_t ret;
 
-	if (argc != 3) {
-		fprintf(stderr, "usage: %s <priority 0..3> <ping-value>\n", argv[0]);
+	if (argc != 3 && (argc != 4 || strcmp(argv[3], "--no-read"))) {
+		fprintf(stderr, "usage: %s <priority 0..3> <ping-value> [--no-read]\n",
+			argv[0]);
 		return 2;
 	}
 	priority = strtoul(argv[1], &end, 0);
@@ -74,7 +75,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	expected = mailmsg_priority_is_reliable(priority) ? 2 : 1;
+	expected = argc == 4 ? 0 :
+		mailmsg_priority_is_reliable(priority) ? 2 : 1;
 	for (index = 0; index < expected; index++) {
 		pollfd.fd = fd;
 		pollfd.events = POLLIN;

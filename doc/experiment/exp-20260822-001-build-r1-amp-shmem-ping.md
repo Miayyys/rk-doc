@@ -3,7 +3,7 @@ title: "EXP-20260822-001 构建 R1 Linux-Zephyr 共享内存 PING 原型"
 type: experiment
 status: verified
 created: 2026-08-22
-updated: 2026-08-29
+updated: 2026-08-30
 tags: [rk3588, amp, zephyr, shared-memory, cache, psci]
 related:
   - "[[experiment/exp-20260821-003-build-r1-psci-cpu-on-heartbeat]]"
@@ -425,6 +425,14 @@ Zephyr 在首次 doorbell 前不消费；对 p3 test-only `mailmsg_queue_push` �
 
 本步骤验证字符设备按 priority 隔离的 `write`/`poll`/`read` 两条代表路径；p1/p3、`O_NONBLOCK`、poll timeout、`ENOSPC`、并发及 driver unbind 仍未验证。
 
+### 步骤 39：RAM-only MailMsg V3 用户态 TX ring 满
+
+目的与预期结果：在不改变持久化启动介质的前提下，验证 Linux priority 3 SPSC TX ring 达到可用容量后，字符设备 `write` 是否立即向用户态报告空间不足。
+
+本次事件时间为 2026-08-30。使用 RAM-only candidate `r1-mailmsg-userdev-external.img`，加载测试 Zephyr `mailmsg-p3-hold.bin`；该 Zephyr 刻意不消费 priority 3。依次运行 `mailmsg-user-client 3 700..706 --no-read`，七次写入均退出码 `0`。第 8 条 value `707` 输出 `mailmsg write: No space left on device`，退出码为 `1`。保持 p3 满队列状态时，再运行 `/userdata/zephyr-test/mailmsg-user-client 0 801`，得到 ACK `priority=0 type=3 sequence=1 length=8 peer_sequence=9 status=0`、业务 PONG `priority=0 type=2 sequence=2 length=4 value=802`，`p0_after_p3_full_exit=0`。
+
+本步骤验证 Linux priority 3 SPSC TX ring 有 7 个可用槽位，满时内核字符设备 `write` 返回 `-ENOSPC`，用户态观察为 `No space left on device`；在同一验证中，p3 饱和未阻塞 p0 的字符设备 ACK 与业务响应。该隔离结论仅限本次 p3→p0 代表路径，不据此宣称 p1/p2 或全优先级隔离、自动恢复或上层重试策略已验证。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -473,6 +481,7 @@ Zephyr 在首次 doorbell 前不消费；对 p3 test-only `mailmsg_queue_push` �
 | RAM-only MailMsg V3 混合突发与满队列隔离 | test-only 预填四个 priority 后 raw doorbell 按 FIFO 消费；p3 满队列后 p0 仍可正常 endpoint 入队/通知/消费 | 第一段 p0/p1 ACK+PONG、p2/p3 PONG，分别返回 `101..103`、`201..203`、`301..307`、`401..407`；第二段 p3 `500..506` 入队，第 8 条 `507` 返回 `ENOSPC` exit `1`，p0 `900` ACK `seq1 peer9`/PONG `seq2 value901`，p3 PONG `seq3..9/value501..507`；m0c0 `SENT`、m0c3 raw doorbell、`a2b_now=0` | 通过（当前 mailbox0 四通道后端/代表路径；不覆盖并发/公平性/抢占/吞吐延迟/长期稳定/自动重传/大载荷/eMMC） |
 | RAM-only MailMsg V3 TX-full 观测 | 修正为外置数据 FIT 后完成 RAM boot，并观察反向 PONG 入队满状态 | FIT `/userdata/r1-ram-boot-test/r1-mailmsg-tx-full-observation-external.img`，SHA-256 `5ebf4a8222d343cdc319311ea18ebf1e376f6ec8a2ecbd08f154b9f25f7eec0c`；Zephyr `41008 B`，SHA-256 `8aab1e3fc0838f36e840ab4ec551164020942a43363152287d87641a2bfd6a99`；p0 `600..603` 均 exit `0`，ACK/PONG `601..603` 后 ACK `seq7 peer4`；`mailmsg_tx_full valid=1 commit=2 count=1 priority=0 type=2 result=-2` | 通过（TX-full 诊断观察；不改变重试/重排/丢弃策略） |
 | RAM-only MailMsg V3 用户态字符设备 | `/dev/mailmsg-p0..p3` 提供 priority-scoped write/poll/read；p0 有 ACK/PONG，p2 仅 PONG | FIT `build/local/r1-mailmsg-endpoint/r1-mailmsg-userdev-external.img`，38636544 B，SHA-256 `4daeab6d92b2450b4e31e992ec7607b0e6890e9d134b225901eb5016234c87cf`；Linux `5.10.252`、`nproc=7`；p0 PING `41`→ACK `type=3 seq=1 peer=1 status=0`/PONG `seq=2 value=42`，p2 PING `100`→PONG `type=2 seq=3 value=101`；未读取旧 sysfs `mailmsg_response` | 通过（p0/p2 代表路径；不覆盖 p1/p3、O_NONBLOCK、poll timeout、ENOSPC、并发或 driver unbind） |
+| RAM-only MailMsg V3 用户态 TX ring 满 | priority 3 SPSC TX ring 满时字符设备 `write` 返回 `-ENOSPC`；p3 饱和不阻塞 p0 代表路径 | 测试 Zephyr `mailmsg-p3-hold.bin` 刻意不消费 p3；`mailmsg-user-client 3 700..706 --no-read` 均 exit `0`；第 8 条 `707` 输出 `No space left on device`、exit `1`；随后 p0 `801` 得到 ACK `seq1 peer9 status0`、PONG `seq2 value802`，`p0_after_p3_full_exit=0` | 通过（仅本次 p3→p0 代表路径及 p3 7-slot/ENOSPC；不覆盖 p1/p2 或全优先级隔离、自动恢复或重试策略） |
 
 ## 结论
 

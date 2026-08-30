@@ -3,7 +3,7 @@ title: "MailMsg 协议设计说明"
 type: note
 status: draft
 created: 2026-08-27
-updated: 2026-08-29
+updated: 2026-08-30
 tags: [rk3588, amp, ipc, mailmsg, shared-memory]
 aliases: ["MailMsg protocol"]
 related:
@@ -37,7 +37,7 @@ MailMsg 负责消息帧、队列、发布/消费可见性、完整性检查和�
 
 通用 endpoint 层 `src/mailmsg/mailmsg_endpoint.{h,c}` 只负责一次生命周期内绑定 Linux 或 CPU3 角色、维护本端序号、发送和接收。发送的语义是先尝试入队，再调用通知；入队结果与通知结果分开返回。endpoint 不负责调度、线程、重传或业务策略。Zephyr 和 Linux 的正常 `mailmsg_ping`/`mailmsg_response` 路径使用该接口；CRC 注入和不发 doorbell 的队列测试仍是测试专用的直接构帧路径。
 
-Linux 用户态提供四个 priority-scoped 字符设备 `/dev/mailmsg-p0` 到 `/dev/mailmsg-p3`，以 `write` 提交本 priority 消息，并以 `poll`/`read` 获取响应。该入口与旧 sysfs 测试入口不能并行消费同一响应队列；已完成的板端证据只覆盖 p0 的 ACK/PONG 和 p2 的 PONG 代表路径，其他行为见实验记录中的未验证边界。
+Linux 用户态提供四个 priority-scoped 字符设备 `/dev/mailmsg-p0` 到 `/dev/mailmsg-p3`，以 `write` 提交本 priority 消息，并以 `poll`/`read` 获取响应。该入口与旧 sysfs 测试入口不能并行消费同一响应队列；字符设备板端证据覆盖 p0 的 ACK/PONG、p2 的 PONG，以及 p3 TX ring 满时 `write` 返回 `-ENOSPC` 的代表路径，其他行为见实验记录中的未验证边界。
 
 ## 优先级队列
 
@@ -98,6 +98,8 @@ priority 0/1 收到完整且 CRC 正确的帧后发送 ACK；CRC 或其他有效
 协议不自动重传。发送端应用根据入队结果、ACK/NACK、`sequence` 和错误码自行选择重传、丢弃、降级、报警或复位。
 
 队列满时，协议/底层应立即、非阻塞地报告 `FULL` 或对应错误，不等待，也不覆盖已有消息；后续处置完全由上层调用者决定。该语义已由 p3 代表路径验证，但并发或压力下的泛化仍待验证。
+
+对用户态字符设备而言，p3 代表路径的满队列表现为 `write` 返回 `-ENOSPC`，由调用者决定重试、丢弃、降级或报警；同一验证中 p3 保持饱和后，p0 的 `write` 仍返回 ACK `sequence=1 peer_sequence=9 status=0` 和业务 PONG `sequence=2 value=802`，退出码为 `0`。这只证明本次 p3→p0 代表路径未互相阻塞，不证明 p1/p2 或全优先级隔离，也不证明自动恢复。
 
 实现还可以提供发送方向的 TX-full 诊断状态（例如计数、priority、消息类型和错误结果）供观察；这只是报告，不改变入队、通知、重试、重排或丢弃策略。发送端应用仍自行决定后续处置。
 
