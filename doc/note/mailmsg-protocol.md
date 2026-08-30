@@ -37,7 +37,9 @@ MailMsg 负责消息帧、队列、发布/消费可见性、完整性检查和�
 
 通用 endpoint 层 `src/mailmsg/mailmsg_endpoint.{h,c}` 只负责一次生命周期内绑定 Linux 或 CPU3 角色、维护本端序号、发送和接收。发送的语义是先尝试入队，再调用通知；入队结果与通知结果分开返回。endpoint 不负责调度、线程、重传或业务策略。Zephyr 和 Linux 的正常 `mailmsg_ping`/`mailmsg_response` 路径使用该接口；CRC 注入和不发 doorbell 的队列测试仍是测试专用的直接构帧路径。
 
-Linux 用户态提供四个 priority-scoped 字符设备 `/dev/mailmsg-p0` 到 `/dev/mailmsg-p3`，以 `write` 提交本 priority 消息，并以 `poll`/`read` 获取响应。该入口与旧 sysfs 测试入口不能并行消费同一响应队列；字符设备板端证据覆盖 p0 的 ACK/PONG、p2 的 PONG，以及 p3 TX ring 满时 `write` 返回 `-ENOSPC` 的代表路径，其他行为见实验记录中的未验证边界。
+Linux 用户态提供四个 priority-scoped 字符设备 `/dev/mailmsg-p0` 到 `/dev/mailmsg-p3`，以 `write` 提交本 priority 消息，并以 `poll`/`read` 获取响应。该入口与旧 sysfs 测试入口不能并行消费同一响应队列；字符设备板端证据覆盖 p0 的 ACK/PONG、p2 的 PONG、p3 TX ring 满时 `write` 返回 `-ENOSPC`，以及每 priority 的独占读代表路径，其他行为见实验记录中的未验证边界。
+
+接收端按 priority 维护独占所有权：第一个 `poll/read` fd 成为该 priority ring 的接收者，第二个接收者返回 `EBUSY`；拥有者关闭后，新 fd 可接管，并可在空 ring 上得到 `EAGAIN`。该语义由 2026-08-30 RAM-only 板端代表测试验证；独占读测试后 p0 `901` 仍返回 ACK `sequence=1 peer_sequence=1 status=0` 和 PONG `sequence=2 value=902`，退出码为 `0`，仅说明该改动未回归 p0 代表路径。发送端仍允许多写者；源码审查显示现有 `data->lock` 对发送路径串行化，但这不是多进程发送压力或业务交付正确性证据。
 
 ## 优先级队列
 

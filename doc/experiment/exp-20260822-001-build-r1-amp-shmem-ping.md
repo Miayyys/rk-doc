@@ -433,6 +433,24 @@ Zephyr 在首次 doorbell 前不消费；对 p3 test-only `mailmsg_queue_push` �
 
 本步骤验证 Linux priority 3 SPSC TX ring 有 7 个可用槽位，满时内核字符设备 `write` 返回 `-ENOSPC`，用户态观察为 `No space left on device`；在同一验证中，p3 饱和未阻塞 p0 的字符设备 ACK 与业务响应。该隔离结论仅限本次 p3→p0 代表路径，不据此宣称 p1/p2 或全优先级隔离、自动恢复或上层重试策略已验证。
 
+### 步骤 40：RAM-only MailMsg 用户态独占读
+
+目的与预期结果：验证每个 priority 的用户态接收端是否保持单一所有者，以及所有者关闭后能否由新接收端接管；不验证多进程发送压力或业务交付正确性。
+
+本次事件时间为 2026-08-30。使用新 RAM-only FIT `r1-mailmsg-exclusive-reader.img`，SHA-256 为 `13945fb158825b414ac04e4950e22bed077ac3fdf607b5e8c06c15f1bf03c496`；此前已处于 Zephyr CPU3 启动状态。板端执行 `/userdata/zephyr-test/mailmsg-exclusive-reader-test`，输出：
+
+```text
+exclusive-reader=pass second=EBUSY handoff=EAGAIN
+```
+
+退出码为 `0`。该结果表明每个 priority 的第一个 `poll/read` fd 获得接收者所有权，第二个接收者被拒绝并返回 `EBUSY`；拥有者关闭后，新 fd 可接管，并在空 ring 上得到 `EAGAIN`。
+
+另经源码审查确认，发送端允许多写者，现有 `data->lock` 对发送路径作串行化；这不是本次板端多写者压力或业务交付正确性验证。
+
+独占读测试之后执行 `/userdata/zephyr-test/mailmsg-user-client 0 901`，输出 ACK `priority=0 type=3 sequence=1 length=8 peer_sequence=1 status=0`、PONG `priority=0 type=2 sequence=2 length=4 value=902`，`p0_regression_exit=0`；这仅说明独占读改动未回归该 p0 代表路径。
+
+本步骤仅验证独占读、关闭后的接管、空 ring 返回及 p0 回归的代表路径；不据此宣称多进程发送压力、并发消费、业务交付正确性或长期稳定性已验证。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -482,6 +500,7 @@ Zephyr 在首次 doorbell 前不消费；对 p3 test-only `mailmsg_queue_push` �
 | RAM-only MailMsg V3 TX-full 观测 | 修正为外置数据 FIT 后完成 RAM boot，并观察反向 PONG 入队满状态 | FIT `/userdata/r1-ram-boot-test/r1-mailmsg-tx-full-observation-external.img`，SHA-256 `5ebf4a8222d343cdc319311ea18ebf1e376f6ec8a2ecbd08f154b9f25f7eec0c`；Zephyr `41008 B`，SHA-256 `8aab1e3fc0838f36e840ab4ec551164020942a43363152287d87641a2bfd6a99`；p0 `600..603` 均 exit `0`，ACK/PONG `601..603` 后 ACK `seq7 peer4`；`mailmsg_tx_full valid=1 commit=2 count=1 priority=0 type=2 result=-2` | 通过（TX-full 诊断观察；不改变重试/重排/丢弃策略） |
 | RAM-only MailMsg V3 用户态字符设备 | `/dev/mailmsg-p0..p3` 提供 priority-scoped write/poll/read；p0 有 ACK/PONG，p2 仅 PONG | FIT `build/local/r1-mailmsg-endpoint/r1-mailmsg-userdev-external.img`，38636544 B，SHA-256 `4daeab6d92b2450b4e31e992ec7607b0e6890e9d134b225901eb5016234c87cf`；Linux `5.10.252`、`nproc=7`；p0 PING `41`→ACK `type=3 seq=1 peer=1 status=0`/PONG `seq=2 value=42`，p2 PING `100`→PONG `type=2 seq=3 value=101`；未读取旧 sysfs `mailmsg_response` | 通过（p0/p2 代表路径；不覆盖 p1/p3、O_NONBLOCK、poll timeout、ENOSPC、并发或 driver unbind） |
 | RAM-only MailMsg V3 用户态 TX ring 满 | priority 3 SPSC TX ring 满时字符设备 `write` 返回 `-ENOSPC`；p3 饱和不阻塞 p0 代表路径 | 测试 Zephyr `mailmsg-p3-hold.bin` 刻意不消费 p3；`mailmsg-user-client 3 700..706 --no-read` 均 exit `0`；第 8 条 `707` 输出 `No space left on device`、exit `1`；随后 p0 `801` 得到 ACK `seq1 peer9 status0`、PONG `seq2 value802`，`p0_after_p3_full_exit=0` | 通过（仅本次 p3→p0 代表路径及 p3 7-slot/ENOSPC；不覆盖 p1/p2 或全优先级隔离、自动恢复或重试策略） |
+| RAM-only MailMsg 用户态独占读 | 每个 priority 的第一个接收者独占拥有 ring；第二个接收者返回 `EBUSY`；释放后可接管，空 ring 返回 `EAGAIN`；独占读改动后 p0 代表路径仍可用 | FIT `r1-mailmsg-exclusive-reader.img` SHA-256 `13945fb158825b414ac04e4950e22bed077ac3fdf607b5e8c06c15f1bf03c496`；板端 `exclusive-reader=pass second=EBUSY handoff=EAGAIN`、exit `0`；随后 p0 `901` 得到 ACK `seq1 peer1 status0`、PONG `seq2 value902`，`p0_regression_exit=0` | 通过（独占读及 p0 回归代表路径；多写者仅源码审查，不覆盖发送压力、并发消费、业务交付或长期稳定性） |
 
 ## 结论
 
