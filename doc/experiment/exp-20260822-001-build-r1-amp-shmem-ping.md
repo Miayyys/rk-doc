@@ -495,6 +495,18 @@ mpidr=0x300 level=0 state=off (1)
 
 该顺序仅确认显式 rearm 后可重新加载并 `start`，且 p0 代表路径返回 ACK/业务响应；没有证明自动恢复。未验证未完成事务处理、mailbox pending 恢复或其他业务可靠性。
 
+另在 CPU3 当前 fresh `affinity_state` 为 `mpidr=0x300 level=0 state=on (0)` 时执行 `printf rearm > $amp/rearm`，得到 `write error: Device or resource busy`，退出码为 `1`；随后 fresh affinity 仍为 `state=on (0)`。该拒绝反例仅说明运行中 CPU3 不接受本次 rearm 请求。
+
+在 CPU3 已 self-`CPU_OFF` 的状态下，后台 `bash -c 'exec 3<>/dev/mailmsg-p1; sleep 300' &` holder（PID `3394`）保持 `/dev/mailmsg-p1` fd；此时 rearm 得到 `Device or resource busy`、退出码为 `1`。终止 holder 后 `holder_exit=143`，再次 rearm 的 `rearm_after_close_exit=0`，status 为 `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11`。这仅记录 open-fd guard 的拒绝与释放后的显式 rearm，不扩展为未来 OFFLINE 生命周期设计或自动恢复能力。
+
+### 步骤 44：RAM-only MailMsg OFFLINE 最小生命周期
+
+目的与预期结果：验证 CPU3 已进入 `OFF` 后，MailMsg 用户态等待端能报告 `offline` 并结束等待；同时记录坏 errno 映射的修正。OFFLINE 由一次 fresh affinity 读取观察到 `OFF` 后触发，不验证自动异步检测、自动恢复或生产服务管理。
+
+本次事件时间为 2026-08-30。v1 流程已确认 CPU3 `OFF` 后 `mailmsg_state=offline`、`poll revents=0x18`，但 `read` 得到 `EIO (5)`，测试退出码为 `1`；该结果定位出内核 errno 映射缺口。修正后的 v2 FIT SHA-256 为 `3e7abf8cb238fb90a10f3b4ca88ce035ab7b14912d364b9ce1a7acc40cbd2c49`；同一流程输出 affinity `off`、`poll-revents=0x18`、`read-errno=67 (Link has been severed)`、`waiter_exit=0`、`mailmsg_state=offline`。
+
+本步骤仅验证 fresh affinity `OFF` 观察触发的 OFFLINE 最小等待/读取生命周期，以及 v2 对 errno 映射缺口的修正；不据此宣称自动恢复或生产服务管理已实现或验证。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -547,7 +559,8 @@ mpidr=0x300 level=0 state=off (1)
 | RAM-only MailMsg 用户态独占读 | 每个 priority 的第一个接收者独占拥有 ring；第二个接收者返回 `EBUSY`；释放后可接管，空 ring 返回 `EAGAIN`；独占读改动后 p0 代表路径仍可用 | FIT `r1-mailmsg-exclusive-reader.img` SHA-256 `13945fb158825b414ac04e4950e22bed077ac3fdf607b5e8c06c15f1bf03c496`；板端 `exclusive-reader=pass second=EBUSY handoff=EAGAIN`、exit `0`；随后 p0 `901` 得到 ACK `seq1 peer1 status0`、PONG `seq2 value902`，`p0_regression_exit=0` | 通过（独占读及 p0 回归代表路径；多写者仅源码审查，不覆盖发送压力、并发消费、业务交付或长期稳定性） |
 | RAM-only CPU3 live PSCI affinity 读取 | 启动前读到 `OFF (1)`，CPU3 启动后读到 `ON (0)` | FIT `/userdata/r1-ram-boot-test/r1-psci-affinity-refresh.img` SHA-256 `d3bd61f923253db4e5c79936ec2c5e4aa31525a26d02c0f2de21288e865c8dbc`；启动前 `mpidr=0x300 level=0 state=off (1)`；CPU3 `start` 后 `mpidr=0x300 level=0 state=on (0)` | 通过（fresh `PSCI_AFFINITY_INFO` 只读观察；不覆盖 CPU_OFF、rearm、重复装载或任何写入） |
 | RAM-only CPU3 self-CPU_OFF | Zephyr EL1 执行 `pm_cpu_off` 后 fresh affinity 读到 `OFF (1)` | Zephyr `mailmsg-selfoff.bin`，41008 B，SHA-256 `ccf57c8f3fa8c5a6d3d2e5c07be54e987030d74d986dcb603f4043c33f4bf571`；`mailmsg-user-client 0 0x4350554f --no-read` exit `0`；1 秒后 `mpidr=0x300 level=0 state=off (1)`，status `magic=0x53544f50`（`STOPPING`） | 通过（仅本次 self-CPU_OFF 与 fresh 只读确认；不覆盖 rearm、第二次镜像加载/CPU_ON、未完成事务、mailbox pending 恢复或业务可靠性） |
-| RAM-only CPU3 guarded rearm 端到端 | self-CPU_OFF 后显式 rearm 不自动 CPU_ON；重新加载/`start` 后 CPU3 再次 ON，p0 代表路径可用 | 初始 fresh `affinity_state=off (1)`；首次 `start` 后为 `on`；self-CPU_OFF 后为 `off (1)`、`magic=0x53544f50`；`printf rearm > rearm` exit `0` 后 `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11`；重新加载 `mailmsg-p3-hold.bin`、`start` 后为 `on`；p0 `901` 返回 ACK/`value=902`、exit `0` | 通过（显式 rearm/重新启动及 p0 代表回归；不证明自动恢复、生产就绪、未完成事务或 mailbox pending 恢复） |
+| RAM-only CPU3 guarded rearm 端到端 | self-CPU_OFF 后显式 rearm 不自动 CPU_ON；重新加载/`start` 后 CPU3 再次 ON，运行中的 CPU3 拒绝 rearm；open fd 时拒绝，关闭后可显式 rearm；p0 代表路径可用 | 初始 fresh `affinity_state=off (1)`；首次 `start` 后为 `on`；self-CPU_OFF 后为 `off (1)`、`magic=0x53544f50`；`printf rearm > rearm` exit `0` 后 `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11`；重新加载 `mailmsg-p3-hold.bin`、`start` 后为 `on`；p0 `901` 返回 ACK/`value=902`、exit `0`。CPU3 为 `state=on (0)` 时 rearm 返回 `write error: Device or resource busy`、exit `1`，随后仍为 `state=on (0)`；CPU3 self-off 且 holder PID `3394` 保持 `/dev/mailmsg-p1` fd 时 rearm 同样返回 `Device or resource busy`、exit `1`，终止 holder 后 `holder_exit=143`、`rearm_after_close_exit=0`，status `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11` | 通过（显式 rearm/重新启动、运行中及 open-fd guard 拒绝、关闭后显式 rearm 及 p0 代表回归；不证明自动恢复、生产就绪、未完成事务或 mailbox pending 恢复） |
+| RAM-only MailMsg OFFLINE 最小生命周期 | CPU3 fresh affinity 为 `OFF` 后，等待端报告 `offline`，`poll`/`read` 返回规范 errno 并正常结束 | v1：`mailmsg_state=offline`、`poll revents=0x18`，`read=EIO (5)`、exit `1`，暴露 errno 映射缺口；v2 FIT SHA-256 `3e7abf8cb238fb90a10f3b4ca88ce035ab7b14912d364b9ce1a7acc40cbd2c49`：affinity `off`、`poll-revents=0x18`、`read-errno=67 (Link has been severed)`、`waiter_exit=0`、`mailmsg_state=offline` | 通过（v2 修正 errno 映射；OFFLINE 由一次 fresh affinity OFF 观察触发，不证明自动异步检测、自动恢复或生产服务管理） |
 
 ## 结论
 
