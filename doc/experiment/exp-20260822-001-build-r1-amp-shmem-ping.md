@@ -507,6 +507,14 @@ mpidr=0x300 level=0 state=off (1)
 
 本步骤仅验证 fresh affinity `OFF` 观察触发的 OFFLINE 最小等待/读取生命周期，以及 v2 对 errno 映射缺口的修正；不据此宣称自动恢复或生产服务管理已实现或验证。
 
+### 步骤 45：RAM-only MailMsg 自动 OFFLINE 检测
+
+目的与预期结果：验证 MailMsg worker 是否能周期性读取 fresh PSCI affinity，在 CPU3 self-`CPU_OFF` 后自动唤醒等待端并报告 `offline`；不验证即时检测、自动恢复、suspend 安全或生产服务管理。
+
+本次事件时间为 2026-08-30。使用 RAM-only FIT `/userdata/r1-mailmsg-offline-auto.img`，SHA-256 为 `ab459c3fa7a509e2c2c15a8035ee9e37582fa1e3b12cad9ec2216f5ed9c0941a`。初始未 armed 状态为 `monitor=0/0`，执行 `start` 后为 `monitor=1/0`。启动 `timeout 5 /userdata/mailmsg-offline-wait-test` 后触发 self-`CPU_OFF`；测试刻意未读取 `affinity_state`。waiter 输出 `poll=0x18/read errno67`，退出码为 `0`；随后 status 为 `offline monitor=84/0`。
+
+该结果确认 worker 每 1 秒基于 fresh PSCI affinity 判断 `OFF`，能够自动唤醒并完成 OFFLINE 报告；不表示即时检测，不证明自动恢复、suspend 安全或生产服务管理。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -561,6 +569,7 @@ mpidr=0x300 level=0 state=off (1)
 | RAM-only CPU3 self-CPU_OFF | Zephyr EL1 执行 `pm_cpu_off` 后 fresh affinity 读到 `OFF (1)` | Zephyr `mailmsg-selfoff.bin`，41008 B，SHA-256 `ccf57c8f3fa8c5a6d3d2e5c07be54e987030d74d986dcb603f4043c33f4bf571`；`mailmsg-user-client 0 0x4350554f --no-read` exit `0`；1 秒后 `mpidr=0x300 level=0 state=off (1)`，status `magic=0x53544f50`（`STOPPING`） | 通过（仅本次 self-CPU_OFF 与 fresh 只读确认；不覆盖 rearm、第二次镜像加载/CPU_ON、未完成事务、mailbox pending 恢复或业务可靠性） |
 | RAM-only CPU3 guarded rearm 端到端 | self-CPU_OFF 后显式 rearm 不自动 CPU_ON；重新加载/`start` 后 CPU3 再次 ON，运行中的 CPU3 拒绝 rearm；open fd 时拒绝，关闭后可显式 rearm；p0 代表路径可用 | 初始 fresh `affinity_state=off (1)`；首次 `start` 后为 `on`；self-CPU_OFF 后为 `off (1)`、`magic=0x53544f50`；`printf rearm > rearm` exit `0` 后 `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11`；重新加载 `mailmsg-p3-hold.bin`、`start` 后为 `on`；p0 `901` 返回 ACK/`value=902`、exit `0`。CPU3 为 `state=on (0)` 时 rearm 返回 `write error: Device or resource busy`、exit `1`，随后仍为 `state=on (0)`；CPU3 self-off 且 holder PID `3394` 保持 `/dev/mailmsg-p1` fd 时 rearm 同样返回 `Device or resource busy`、exit `1`，终止 holder 后 `holder_exit=143`、`rearm_after_close_exit=0`，status `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11` | 通过（显式 rearm/重新启动、运行中及 open-fd guard 拒绝、关闭后显式 rearm 及 p0 代表回归；不证明自动恢复、生产就绪、未完成事务或 mailbox pending 恢复） |
 | RAM-only MailMsg OFFLINE 最小生命周期 | CPU3 fresh affinity 为 `OFF` 后，等待端报告 `offline`，`poll`/`read` 返回规范 errno 并正常结束 | v1：`mailmsg_state=offline`、`poll revents=0x18`，`read=EIO (5)`、exit `1`，暴露 errno 映射缺口；v2 FIT SHA-256 `3e7abf8cb238fb90a10f3b4ca88ce035ab7b14912d364b9ce1a7acc40cbd2c49`：affinity `off`、`poll-revents=0x18`、`read-errno=67 (Link has been severed)`、`waiter_exit=0`、`mailmsg_state=offline` | 通过（v2 修正 errno 映射；OFFLINE 由一次 fresh affinity OFF 观察触发，不证明自动异步检测、自动恢复或生产服务管理） |
+| RAM-only MailMsg 自动 OFFLINE 检测 | worker 周期性读取 fresh PSCI affinity，在 self-CPU_OFF 后自动唤醒 waiter 并报告 `offline` | FIT `/userdata/r1-mailmsg-offline-auto.img` SHA-256 `ab459c3fa7a509e2c2c15a8035ee9e37582fa1e3b12cad9ec2216f5ed9c0941a`；初始 `monitor=0/0`，`start` 后 `monitor=1/0`；`timeout 5 /userdata/mailmsg-offline-wait-test` 触发 self-CPU_OFF，未读取 `affinity_state`；waiter `poll=0x18/read errno67`、exit `0`；status `offline monitor=84/0` | 通过（每 1 秒 fresh PSCI 检测并自动唤醒；不证明即时检测、自动恢复、suspend 安全或生产服务管理） |
 
 ## 结论
 
