@@ -1,0 +1,38 @@
+
+[05:01:29] MailMsg V1 revision 6 board profile: stop-refused
+report=/userdata/mailmsg-v1-r6/reports/stop-refused-20231122-050129.log
+PASS: R1 artifact hashes
+
+--- diagnostic snapshot ---
+image=41008/41008 affinity=off (1) affinity_seen_on=1 mailmsg_state=offline session=2/2 session_result=0 stop_sequence=2 stop_reply=6 stop_result=0 stop_notify=0 affinity_monitor=2/0 cpu_on_attempted=1 cpu_on_ret=0 m0c0=rx:7/0xb2a10000/0x0,tx:5/4,notify:0/5/0/0 m0c1=rx:1/0xb2a10001/0x1,tx:1/0,notify:0/1/0/0 m0c2=rx:1/0xb2a10002/0x2,tx:1/0,notify:0/1/0/0 m0c3=rx:6/0xb2a10003/0x3,tx:3/2,notify:0/2/0/1 a2b_now=m0:0x0 mailmsg_notify=0 notify_inject=3/-5/0 mailmsg_tx_full=valid:1/commit:1/count:0/priority:4/type:0/result:0 mbox_observation=0x41434b43/0x1/0x0/0x1 magic=0x53544f50 current_el=4
+p0 tx=2 full=0 high=1 depth=0 notify=2/0/0 rx=4 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p1 tx=0 full=0 high=0 depth=0 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p2 tx=0 full=0 high=0 depth=0 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p3 tx=0 full=0 high=0 depth=0 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+mpidr=0x300 level=0 state=off (1)
+--- end snapshot ---
+PASS: V6 kernel/DT/sysfs preflight
+
+[05:01:30] loading mailmsg-v1-normal.bin into the reserved CPU3 image window
+PASS: SESSION_READY generation 3 and ACTIVE state
+priority=0 type=3 sequence=2 length=8 peer_sequence=1 status=0
+priority=0 type=2 sequence=3 length=4 value=1101
+
+[05:01:30] STOP_REFUSED and active data-plane recovery
+image=41008/41008 affinity=on (0) affinity_seen_on=1 mailmsg_state=active session=3/3 session_result=0 stop_sequence=2 stop_reply=7 stop_result=-125 stop_notify=0 affinity_monitor=2/0 cpu_on_attempted=1 cpu_on_ret=0 m0c0=rx:10/0xb2a10000/0x0,tx:7/6,notify:0/7/0/0 m0c1=rx:1/0xb2a10001/0x1,tx:1/0,notify:0/1/0/0 m0c2=rx:1/0xb2a10002/0x2,tx:1/0,notify:0/1/0/0 m0c3=rx:6/0xb2a10003/0x3,tx:3/2,notify:0/2/0/1 a2b_now=m0:0x0 mailmsg_notify=0 notify_inject=3/-5/0 mailmsg_tx_full=valid:1/commit:1/count:0/priority:4/type:0/result:0 mbox_observation=0x41434b43/0x1/0x0/0x1 magic=0x414d5031 current_el=4
+priority=0 type=3 sequence=5 length=8 peer_sequence=3 status=0
+priority=0 type=2 sequence=6 length=4 value=901
+PASS: STOP_REFUSED preserved ACTIVE and p0 usability
+
+--- diagnostic snapshot ---
+image=41008/41008 affinity=on (0) affinity_seen_on=1 mailmsg_state=active session=3/3 session_result=0 stop_sequence=2 stop_reply=7 stop_result=-125 stop_notify=0 affinity_monitor=2/0 cpu_on_attempted=1 cpu_on_ret=0 m0c0=rx:11/0xb2a10000/0x0,tx:8/7,notify:0/8/0/0 m0c1=rx:1/0xb2a10001/0x1,tx:1/0,notify:0/1/0/0 m0c2=rx:1/0xb2a10002/0x2,tx:1/0,notify:0/1/0/0 m0c3=rx:6/0xb2a10003/0x3,tx:3/2,notify:0/2/0/1 a2b_now=m0:0x0 mailmsg_notify=0 notify_inject=3/-5/0 mailmsg_tx_full=valid:1/commit:1/count:0/priority:4/type:0/result:0 mbox_observation=0x41434b43/0x1/0x0/0x1 magic=0x414d5031 current_el=4
+p0 tx=3 full=0 high=1 depth=0 notify=3/0/0 rx=6 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p1 tx=0 full=0 high=0 depth=0 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p2 tx=0 full=0 high=0 depth=0 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p3 tx=0 full=0 high=0 depth=0 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+mpidr=0x300 level=0 state=on (0)
+--- end snapshot ---
+PASS: stop-refused profile complete; CPU3 intentionally remains ON
+
+[05:01:30] profile result: PASS
+Full report saved at /userdata/mailmsg-v1-r6/reports/stop-refused-20231122-050129.log

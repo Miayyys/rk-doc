@@ -21,7 +21,9 @@ struct mailmsg_user_frame {
 	mailmsg_u32 type;
 	mailmsg_u32 sequence;
 	mailmsg_u32 length;
-	mailmsg_u8 payload[MAILMSG_PAYLOAD_BYTES];
+	/* Keep the userspace record ABI at 48 bytes while protocol V6 reserves
+	 * four bytes in each shared-memory frame for its session generation. */
+	mailmsg_u8 payload[MAILMSG_USER_PAYLOAD_BYTES];
 };
 
 #endif /* MAILMSG_USER_H */

@@ -1,0 +1,4 @@
+/* Do not claim the Linux Debug UART while CPU3 is the AMP core. */
+&uart2 {
+	status = "disabled";
+};

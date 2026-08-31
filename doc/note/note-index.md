@@ -22,7 +22,7 @@
 ## AMP 与 IPC
 
 - [AMP 共享内存队列与通知后端分层](amp-shared-memory-notification-abstraction.md)
-- [MailMsg 协议：共享内存消息面与可替换通知层](mailmsg-protocol.md)
+- [MailMsg 协议：共享内存消息面、V4 受控停止、STOP_REFUSED 与可替换通知层](mailmsg-protocol.md)
 
 ## 关联查阅方法
 

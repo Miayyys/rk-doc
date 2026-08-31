@@ -12,8 +12,30 @@ enum mailmsg_endpoint_role {
 
 enum mailmsg_endpoint_result {
 	MAILMSG_ENDPOINT_OK = 0,
-	MAILMSG_ENDPOINT_INVALID = -1,
-	MAILMSG_ENDPOINT_PROTOCOL_MISMATCH = -2,
+	/* Keep endpoint errors disjoint from the small negative ring results. */
+	MAILMSG_ENDPOINT_INVALID = -100,
+	MAILMSG_ENDPOINT_PROTOCOL_MISMATCH = -101,
+	MAILMSG_ENDPOINT_STALE_SESSION = -102,
+	/* A committed frame was consumed but belongs to an older generation. */
+	MAILMSG_ENDPOINT_STALE_FRAME = -103,
+};
+
+struct mailmsg_priority_stats {
+	mailmsg_u32 tx_enqueued;
+	mailmsg_u32 tx_full;
+	mailmsg_u32 tx_high_water;
+	mailmsg_u32 notify_sent;
+	mailmsg_u32 notify_coalesced;
+	mailmsg_u32 notify_failed;
+	mailmsg_u32 rx_ok;
+	mailmsg_u32 rx_incomplete;
+	mailmsg_u32 rx_bad_crc;
+	mailmsg_u32 rx_invalid;
+	mailmsg_u32 rx_stale;
+};
+
+struct mailmsg_endpoint_stats {
+	struct mailmsg_priority_stats priority[MAILMSG_PRIORITY_COUNT];
 };
 
 struct mailmsg_send_result {
@@ -30,6 +52,8 @@ struct mailmsg_endpoint {
 	const struct mailmsg_memory_ops *memory_ops;
 	const struct mailmsg_notify_endpoint *notify;
 	mailmsg_u32 next_sequence;
+	mailmsg_u32 generation;
+	struct mailmsg_endpoint_stats stats;
 };
 
 /*
@@ -56,5 +80,7 @@ int mailmsg_endpoint_receive(struct mailmsg_endpoint *endpoint,
 
 int mailmsg_endpoint_has_received(struct mailmsg_endpoint *endpoint,
 				  enum mailmsg_priority priority);
+
+int mailmsg_endpoint_session_valid(struct mailmsg_endpoint *endpoint);
 
 #endif

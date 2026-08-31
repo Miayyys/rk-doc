@@ -3,7 +3,7 @@ title: "EXP-20260822-001 构建 R1 Linux-Zephyr 共享内存 PING 原型"
 type: experiment
 status: verified
 created: 2026-08-22
-updated: 2026-08-30
+updated: 2026-08-31
 tags: [rk3588, amp, zephyr, shared-memory, cache, psci]
 related:
   - "[[experiment/exp-20260821-003-build-r1-psci-cpu-on-heartbeat]]"
@@ -517,6 +517,123 @@ mpidr=0x300 level=0 state=off (1)
 
 自动 OFFLINE 后执行 rearm，退出码为 `0`；sleep 2 后 status 为 `image=0/41008 mailmsg_state=unarmed affinity_monitor=84/0`，监视计数未增长。随后重新加载 `mailmsg-p3-hold.bin` 并执行 `start`，status 为 `active monitor=11/0`；运行 p0 `901` 返回 ACK `seq1 peer1 status0`、PONG `value=902`，退出码为 `0`。用户随后重启，RAM-only 会话结束；不据此推测重启后的板端状态，也未写入 eMMC。
 
+### 步骤 46：RAM-only V4 受控停止
+
+目的与预期结果：验证 Linux `STOP_REQUEST` 经 MailMsg p0 控制面得到 Zephyr `STOP_READY` 后，CPU3 执行 `CPU_OFF`，Linux 由 fresh affinity 观察进入 OFFLINE；不验证停止超时、`STOP_REFUSED`、通知失败、业务收尾或持久化。
+
+本次事件时间为 2026-08-30。使用 RAM-only V4 candidate，Linux 为 7 核且 `mailmsg_stop` 存在；加载 `mailmsg-controlled-stop.bin` 后状态为 `active`、affinity 为 `on`。Linux 执行 `printf stop > mailmsg_stop` 后等待 2 秒，status 为：
+
+```text
+image=41008/41008 affinity=off (1) mailmsg_state=offline stop_sequence=1 stop_result=0 affinity_monitor=27/0 cpu_on_attempted=1 cpu_on_ret=0
+m0c0 rx:1/0xb2a10000/0x0 tx:1/0 notify:0/1/0/0
+a2b_now=0
+magic=0x53544f50 current_el=4
+```
+
+该结果验证 Linux `STOP_REQUEST` → Zephyr `STOP_READY`/`CPU_OFF` → fresh PSCI `OFFLINE` 的代表路径；不据此宣称停止超时、`STOP_REFUSED`、通知失败、业务收尾或持久化行为已验证。
+
+随后显式 rearm 成功，status 为 `image=0`、`unarmed`；重新加载 `mailmsg-controlled-stop.bin` 并执行 `start` 后为 `active`、affinity 为 `on`。运行 p0 `901` 返回 ACK `seq1 peer1 status0` 与 PONG `seq2 value902`，退出码为 `0`；再次执行 stop 后 `second_stop_exit=0`，status 为 `offline stop_sequence=2 stop_result=0 affinity_monitor=64/0`，`m0c0 rx:3/0xb2a10000 tx:3/2 notify:0/3/0/0`，`magic=0x53544f50`。这里 `stop_sequence=2` 是因为 Linux endpoint 只发送 p0 PING `seq1` 和 `STOP_REQUEST seq2`；Zephyr 反向 ACK/PONG 使用独立序号，不计入 Linux endpoint 的 `next_sequence`。
+
+### 步骤 47：RAM-only V4 STOP_REFUSED 与数据面恢复
+
+目的与预期结果：验证 Zephyr 拒绝 `STOP_REQUEST` 时，Linux 控制面记录标准化拒绝结果并恢复数据面；不验证停止超时或停止请求通知失败。
+
+本次事件时间为 2026-08-30。普通 Zephyr refusal candidate 进入 Linux `5.10.252`、`nproc=7`；加载 `41008 B` 的 `mailmsg-stop-refused.bin` 后状态为 `active`、affinity 为 `on`。Linux 执行 `mailmsg_stop` 退出码为 `0`，status 为 `affinity=on (0) mailmsg_state=active stop_sequence=1 stop_result=-125`，p0 为 `tx 1/0 notify 0/1`、`rx 1 0xb2a10000/0`。
+
+随后运行 `/userdata/zephyr-test/mailmsg-user-client 0 901`，得到 ACK `type=3 seq2 peer_seq2 status0` 和 PONG `type=2 seq3 value902`，退出码为 `0`；此时仍为 `active`、affinity `on`。该结果验证 `STOP_REFUSED` 映射为 `-ECANCELED`（数值 `-125`）并恢复数据面；不据此宣称停止超时或停止请求通知失败已验证。
+
+### 步骤 48：MailMsg V1 version=6 生命周期与统计候选构建（待上板）
+
+目的与预期结果：记录 MailMsg V1 名称下共享区结构版本升至 `version=6` 的候选构建，以及其 generation、生命周期门控、超时、通知失败注入和 per-priority 可观测性设计；本步骤不记录板端运行结果。
+
+本次事件时间为 2026-08-30。主候选 FIT 为 `build/local/mailmsg-v1-final/mailmsg-v1-final.img`，SHA-256 为 `eade522dbd360d2e42d4d42e39f7ad7340e31adab4b3229e246ea6991b7d2b50`。Linux 完整 Image、通用主机四项单元测试（均 exit `0`）、普通 Zephyr 及三种测试 Zephyr 变体（`controlled-stop`、`start-timeout`、`stop-timeout`）均构建通过；对应 SHA-256 前缀为 Image `00c72d...`、DTB `ef23d675...`、普通 Zephyr `1b2636...`、`controlled-stop` `e9ee4a...`、`start-timeout` `dcc335...`、`stop-timeout` `6f3c9c...`，四个 Zephyr 变体均为 `41008 B`。完整哈希见 `build/local/mailmsg-v1-final/artifact-manifest.txt`。
+
+本轮实现候选包含逐帧 shared generation（纳入 CRC，wire payload 32 B→28 B；`mailmsg_user_frame` 仍为 48 B，旧第 29–32 字节 payload 行为不兼容）、CPU3 `SESSION_READY` 的 generation/version 握手、Linux `STARTING` gate、`STARTING`/`STOPPING` 数据面与 sysfs 门控、5 秒 `START`/`STOP` timeout、终态及晚响应不复活规则、独立的 `STOP_READY` 5 秒 `CPU_OFF` deadline、affinity worker 每秒 p0 兜底 drain、Zephyr READY bind/commit/published 分离且只重试 doorbell、通知失败注入隔离，以及每个 priority 的 depth/high-water/notify/rx/stale 统计。测试计划分为：正常握手/四 priority 与统计、通知失败、START timeout、STOP_REFUSED/STOP_READY/STOP timeout、rearm/旧 fd 与 LLM 回归。上述内容均为待上板验证的候选设计；所有测试均计划使用 RAM-only，尚无本轮板端输出，不能写成已验证。故障候选可能需要重启恢复。
+
+### 步骤 49：MailMsg V1 R6 主机产物整理与上传（待 RAM 启动后板测）
+
+目的与预期结果：整理 MailMsg V1 R6 的主机校验、上传和四个板端测试 profile，供后续 RAM 启动候选使用；本步骤不记录 R6 板端运行验证。
+
+本次事件时间为 2026-08-31。主机会使用新增的 `scripts/mailmsg-v1-test.sh` 校验并上传 R6 产物，板端测试 profile 为 `controlled`、`stop-refused`、`start-timeout`、`stop-timeout`；脚本不自动执行 U-Boot，也不写启动分区。8 个 artifact 均已完成板端 SHA-256 对照且成功，FIT 位于 `root@10.42.0.193:/userdata/mailmsg-v1-r6/mailmsg-v1-final.img`。
+
+当时板端仍运行原厂 Linux `5.10.110`，因此没有执行 R6 的 RAM 启动或板端测试。R6 当前状态为“已上传、待 RAM 启动后板测”，不能写成已验证或完成。
+
+### 步骤 50：MailMsg V1 R6 controlled 首次板测与 A2B 清理修复（部分验证）
+
+目的与预期结果：在 R6 RAM-only candidate 上分组验证 preflight、握手、四 priority、独占读、CRC NACK、通知失败恢复及 controlled STOP；若发现停止前门铃残留，记录修复并保留 fresh RAM 回归边界。
+
+本次事件时间为 2026-08-31。R6 controlled 首次板测运行 Linux `5.10.252`、7 核；R6 preflight 通过，session 为 `1/1` 且状态为 `active`。四优先级、exclusive reader、p0 CRC NACK 及 p3 notification failure recovery 均通过。
+
+queue-only 测试因测试顺序假设失效而停止：此前 A2B 操作后，Zephyr `mailbox_irq_seen` 持续轮询，7 条 queue-only 消息已经被消费并形成反向 `depth=7`，因此该现象不是协议丢帧。随后逐条回收 PONG `801..807`，所有双向 `depth=0`；controlled STOP 得到 `offline`、`stop_reply=6`、`stop_result=0`，CPU3 为 `OFF`。终态仍观察到 `a2b_now=m0:0x1`，定位为 Zephyr 执行 `CPU_OFF` 前缺少 owner-side 最终 A2B 清理；现有 rearm guard 正确拒绝旧 pending。
+
+主会话随后在 CPU_OFF 前加入 owner-side 四通道 A2B W1C 与回读，controlled-stop bin 重编为 `41008 B`，SHA-256 为 `3876efefc0f5dd221d33fd089ca80b91dbce2187aff9bf4faefa164537b8aae6`，并已上传且完成板端哈希对照。测试脚本已将 queue 测试移动到第一次 Linux A2B 操作之前。修复候选尚未 fresh RAM boot 完成 controlled 全量回归，不能写成完成或已验证修复。
+
+### 步骤 51：R6 controlled 修复后 fresh RAM 全量回归（已验证）
+
+目的与预期结果：在 A2B 清理修复候选上，按正确顺序完成 controlled profile 的 queue、四 priority、异常恢复、rearm 和两轮 STOP 回归，确认 CPU_OFF 前 A2B 状态清零。
+
+本次事件时间为 2026-08-31。修复后 fresh RAM session 运行 Linux `5.10.252`、7 核；R6 preflight 通过，session `1/1 active`。queue 在第一次 Linux A2B 前执行：7 个槽位填满，第 8 条被拒绝；PONG `801..807` 各一次、无覆盖，双向 `depth` 均归零。四 priority 回归、exclusive reader、p0 CRC `NACK_BAD_CRC`、p3 通知失败后下一次 doorbell 回收 `711/712` 均通过，最终 stats 的 `depth` 全为 `0`。
+
+第一次 STOP 得到 `offline/session=1/1/stop_reply=6/stop_result=0/a2b_now=0/affinity=off`；rearm 成功。第二次 session 为 `2/2 active`，p0 `1000` 返回 ACK 与 PONG `1001`；第二次 STOP 同样得到 `offline/stop_reply=6/stop_result=0/a2b_now=0/affinity=off`。板端最终报告为 `PASS controlled profile complete; CPU3 is OFF`，修复已验证。
+
+板端报告 `/userdata/mailmsg-v1-r6/reports/controlled-20231122-045826.log` 已拉回主机 `build/local/mailmsg-v1-final/reports/controlled-20231122-045826.log`，SHA-256 为 `421288118401bc5690d95ede55370184ddb24a8ed00e7c769cc2f929adac66c4`，74 行、4972 字节。文件名中的时间来自板端错误 RTC，不作为本事件时间。
+
+其他 R6 profiles（`stop-refused`、`start-timeout`、`stop-timeout`）及 LLM 回归仍待测；本步骤不表示 R6 全部完成。
+
+### 步骤 52：R6 stop-refused fresh RAM 回归（已验证）
+
+目的与预期结果：在 controlled profile 完成 clean offline、`a2b=0` 后，验证 stop-refused profile 的 rearm、第三次 session、拒绝停止及拒绝后的数据面恢复；CPU3 按设计保持 ON。
+
+本次事件时间为 2026-08-31。controlled profile 结束后同一 RAM 内核处于 clean offline、`a2b=0`；stop-refused profile 成功 rearm 并启动 session `3/3`。初始 p0 `1100` 返回 ACK 与 PONG `1101`。执行 STOP 后状态仍为 `active`、affinity `on`，`stop_reply=7`、`stop_result=-125`、`stop_notify=0`、`a2b_now=0`；随后 p0 `900` 返回 ACK 与 PONG `901`，所有 priority 的 `depth=0`。板端最终报告为 `PASS`，CPU3 按设计保持 ON。
+
+板端报告 `/userdata/mailmsg-v1-r6/reports/stop-refused-20231122-050129.log` 已拉回主机 `build/local/mailmsg-v1-final/reports/stop-refused-20231122-050129.log`，SHA-256 为 `76a78cc1a2939e9f50b733d4c53c9a34f516653bb3ff076e7659ff77fbdb1b63`，38 行、3537 字节。文件名中的时间来自板端错误 RTC，不作为本事件时间。
+
+本步骤仅完成 R6 `stop-refused` profile；`start-timeout`、`stop-timeout` 与 LLM 回归仍待测，不表示 R6 全部完成。
+
+### 步骤 53：R6 start-timeout fresh RAM 回归（已验证）
+
+目的与预期结果：在 fresh RAM boot 上验证 CPU3 未完成 `SESSION_READY` 时 Linux 的 START 超时终态、数据面超时返回及 profile 结束边界；不验证 `stop-timeout`。
+
+本次事件时间为 2026-08-31。初始状态为 `unarmed`、session `0/0`、CPU3 `off`。加载 `start-timeout` 固件并启动后，affinity 为 `on`，`mailmsg_state=start-timeout`、session 为 `1/0`、`session_result=-110`；访问 `/dev/mailmsg-p0` 返回 `Connection timed out`。板端 profile 报告 `PASS`。
+
+本机报告 `build/local/mailmsg-v1-final/reports/start-timeout-20231122-045833.log`，SHA-256 为 `8628edfb934e02f36468e03b447ec4881f99dd4fc24e412917baa923f821cac2`，2218 字节；板端原路径为 `/userdata/mailmsg-v1-r6/reports/start-timeout-20231122-045833.log`。文件名中的时间来自板端错误 RTC，不作为本事件时间。测试结束后必须执行 fresh U-Boot RAM boot；`stop-timeout` 与 LLM 回归仍待测，不表示 R6 全部完成。
+
+### 步骤 54：R6 stop-timeout fresh RAM 回归（已验证）
+
+目的与预期结果：在 fresh RAM boot 上验证 CPU3 已完成 `SESSION_READY` 后，STOP 请求超时的终态、停止请求结果及数据面超时返回；不把该结果扩展为 LLM 或 R6 整体完成。
+
+本次事件时间为 2026-08-31。初始状态为 `unarmed`、session `0/0`、CPU3 `off`。加载专用 stop-timeout 固件后收到 `SESSION_READY generation=1`，状态为 `active`、session `1/1`；p1 正常请求返回 ACK 与 PONG `1301`。执行停止请求后，状态为 `mailmsg_state=stop-timeout`、`stop_result=-110`、`stop_reply=0`、`stop_notify=0`、affinity `on`；访问 `/dev/mailmsg-p1` 返回 `Connection timed out`。板端 profile 报告 `PASS`。
+
+本机报告 `build/local/mailmsg-v1-final/reports/stop-timeout-20231122-050100.log`，SHA-256 为 `be083f02c83549d7a1c87ec5eff65c0eea69b5e9009cfd4d2839e0974152b53c`，2245 字节；板端原路径为 `/userdata/mailmsg-v1-r6/reports/stop-timeout-20231122-050100.log`。文件名中的时间来自板端错误 RTC，不作为本事件时间。测试结束后必须执行 fresh RAM boot；四个 R6 profiles 均已验证，但 LLM 回归仍待测，不表示 R6 整体完成。
+
+### 步骤 55：MailMsg V1 R6 与 RKLLM 共存 fresh RAM 回归（已验证）
+
+目的与预期结果：在普通 MailMsg V1 固件上验证 R6 四个 profile 之后的 RKLLM 共存回归；确认推理期间 p2 与推理后 p0 的数据面仍可工作，并与 controlled STOP 路径区分。
+
+本次事件时间为 2026-08-31。fresh RAM 初始 Linux 为 `5.10.252`、7 核，状态为 `unarmed`、session `0/0`；加载普通 `mailmsg-v1-normal.bin` 后为 `active`、session `1/1`。推理前 p0 `41` 返回 ACK 与 PONG `42`。运行 `/userdata/rkllm-api-demo/llm_demo-amp` 时，Runtime 为 `1.3.0`、RKNPU 为 `0.9.8`，Enabled CPUs 为 `[3,4,5,6]`、数量 `4`；初始化成功，prompt `ok` 输出 `Alright,`，exit `0`，未见 mask、matmul 或 init 失败。LLM 进程运行期间主会话观察到连续 16 次 p2 PING/PONG，value 为 `1501..1516`；随后 p0 `1401` 返回 ACK+PONG `1402`，补充回归中 p0 `1499` 返回 ACK+PONG `1500`。
+
+终态为 `active`、session `1/1`、CPU3 `on`、`a2b_now=0`；p0 `tx=3`、`depth=0`、`rx=7`、errors 全为 `0`，p2 `tx=16`、`rx=16`、`depth=0`、errors 全为 `0`。本轮使用普通 bin，不将其写成受控 STOP；controlled profile 已此前独立通过。
+
+报告已拉回主机 `build/local/mailmsg-v1-final/reports/llm-coexistence-20260831.log`，SHA-256 为 `f1f67016e039c91f4673fa4f2289edb7363fa92a2776de152fa55c45f792e1ba`，2200 字节；板端原路径为 `/userdata/mailmsg-v1-r6/reports/llm-coexistence-20260831.log`。该结果完成 R6 本轮定义的 RAM-only 验证范围，但不表示完整产品或持久化完成；并发压力、长期稳定性、吞吐/延迟、大数据、崩溃恢复、suspend、eMMC 等仍未覆盖。
+
+### 步骤 56：R6 里程碑冻结与长期证据附件（本机完成中）
+
+目的与预期结果：保存 R6 已确认源码与五份脱敏板端报告的可追溯关系，形成不提交大型产物的本机冻结目录；本步骤不改变源码、板端状态或 Git 历史。
+
+本次事件时间为 2026-08-31。内核仓库 `study/r1-dts-port` 已有本地 commit `dcb7dfd7b`（`soc: rockchip: add MailMsg R6 lifecycle control`）；远端仍为 Rockchip `origin`，没有个人 upstream，commit 尚未推送。冻结目录为 `build/local/releases/mailmsg-v1-r6-20260831/`，其中包含最终 FIT、Image、DTB、resource、四个 Zephyr bin、三个板端工具、ITS、五份报告及该内核 commit 的 format-patch；主会话稍后补 final manifest 并设为只读，因此冻结包当前为本机完成中，不将大型产物提交。
+
+五份脱敏报告已按原字节复制到 `doc/_assets/mailmsg-r6/`。R6 四个 profile 的板端报告来自既有 profile 流程，LLM 共存报告来自普通 bin 与 `llm_demo-amp` 回归；本机仅执行原字节复制和 `sha256sum` 校验，不改写报告内容。相关脚本/命令不自动执行 U-Boot、不写启动分区或 eMMC。
+
+| 报告 | 板端来源 | 本机来源 | 长期附件 | SHA-256 |
+| --- | --- | --- | --- | --- |
+| controlled | `/userdata/mailmsg-v1-r6/reports/controlled-20231122-045826.log` | `build/local/mailmsg-v1-final/reports/controlled-20231122-045826.log` | [controlled.log](../_assets/mailmsg-r6/controlled.log) | `421288118401bc5690d95ede55370184ddb24a8ed00e7c769cc2f929adac66c4` |
+| stop-refused | `/userdata/mailmsg-v1-r6/reports/stop-refused-20231122-050129.log` | `build/local/mailmsg-v1-final/reports/stop-refused-20231122-050129.log` | [stop-refused.log](../_assets/mailmsg-r6/stop-refused.log) | `76a78cc1a2939e9f50b733d4c53c9a34f516653bb3ff076e7659ff77fbdb1b63` |
+| start-timeout | `/userdata/mailmsg-v1-r6/reports/start-timeout-20231122-045833.log` | `build/local/mailmsg-v1-final/reports/start-timeout-20231122-045833.log` | [start-timeout.log](../_assets/mailmsg-r6/start-timeout.log) | `8628edfb934e02f36468e03b447ec4881f99dd4fc24e412917baa923f821cac2` |
+| stop-timeout | `/userdata/mailmsg-v1-r6/reports/stop-timeout-20231122-050100.log` | `build/local/mailmsg-v1-final/reports/stop-timeout-20231122-050100.log` | [stop-timeout.log](../_assets/mailmsg-r6/stop-timeout.log) | `be083f02c83549d7a1c87ec5eff65c0eea69b5e9009cfd4d2839e0974152b53c` |
+| LLM 共存 | `/userdata/mailmsg-v1-r6/reports/llm-coexistence-20260831.log` | `build/local/mailmsg-v1-final/reports/llm-coexistence-20260831.log` | [llm-coexistence.log](../_assets/mailmsg-r6/llm-coexistence.log) | `f1f67016e039c91f4673fa4f2289edb7363fa92a2776de152fa55c45f792e1ba` |
+
+本步骤只记录源码 commit、证据附件和本机冻结准备状态；不表示主仓库已 commit/push，也不表示冻结目录已 final manifest/只读完成。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -572,6 +689,18 @@ mpidr=0x300 level=0 state=off (1)
 | RAM-only CPU3 guarded rearm 端到端 | self-CPU_OFF 后显式 rearm 不自动 CPU_ON；重新加载/`start` 后 CPU3 再次 ON，运行中的 CPU3 拒绝 rearm；open fd 时拒绝，关闭后可显式 rearm；p0 代表路径可用 | 初始 fresh `affinity_state=off (1)`；首次 `start` 后为 `on`；self-CPU_OFF 后为 `off (1)`、`magic=0x53544f50`；`printf rearm > rearm` exit `0` 后 `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11`；重新加载 `mailmsg-p3-hold.bin`、`start` 后为 `on`；p0 `901` 返回 ACK/`value=902`、exit `0`。CPU3 为 `state=on (0)` 时 rearm 返回 `write error: Device or resource busy`、exit `1`，随后仍为 `state=on (0)`；CPU3 self-off 且 holder PID `3394` 保持 `/dev/mailmsg-p1` fd 时 rearm 同样返回 `Device or resource busy`、exit `1`，终止 holder 后 `holder_exit=143`、`rearm_after_close_exit=0`，status `image=0/41008 cpu_on_attempted=0 cpu_on_ret=-11` | 通过（显式 rearm/重新启动、运行中及 open-fd guard 拒绝、关闭后显式 rearm 及 p0 代表回归；不证明自动恢复、生产就绪、未完成事务或 mailbox pending 恢复） |
 | RAM-only MailMsg OFFLINE 最小生命周期 | CPU3 fresh affinity 为 `OFF` 后，等待端报告 `offline`，`poll`/`read` 返回规范 errno 并正常结束 | v1：`mailmsg_state=offline`、`poll revents=0x18`，`read=EIO (5)`、exit `1`，暴露 errno 映射缺口；v2 FIT SHA-256 `3e7abf8cb238fb90a10f3b4ca88ce035ab7b14912d364b9ce1a7acc40cbd2c49`：affinity `off`、`poll-revents=0x18`、`read-errno=67 (Link has been severed)`、`waiter_exit=0`、`mailmsg_state=offline` | 通过（v2 修正 errno 映射；OFFLINE 由一次 fresh affinity OFF 观察触发，不证明自动异步检测、自动恢复或生产服务管理） |
 | RAM-only MailMsg 自动 OFFLINE 检测 | worker 周期性读取 fresh PSCI affinity，在 self-CPU_OFF 后自动唤醒 waiter 并报告 `offline`；rearm 后可重新启动并回归 p0 | FIT `/userdata/r1-mailmsg-offline-auto.img` SHA-256 `ab459c3fa7a509e2c2c15a8035ee9e37582fa1e3b12cad9ec2216f5ed9c0941a`；初始 `monitor=0/0`，`start` 后 `monitor=1/0`；`timeout 5 /userdata/mailmsg-offline-wait-test` 触发 self-CPU_OFF，未读取 `affinity_state`；waiter `poll=0x18/read errno67`、exit `0`；status `offline monitor=84/0`。自动 OFFLINE 后 rearm exit `0`，sleep 2 后 `image=0/41008 mailmsg_state=unarmed affinity_monitor=84/0` 且计数未增长；重载 `mailmsg-p3-hold.bin` + `start` 后 `active monitor=11/0`，p0 `901` 返回 ACK `seq1 peer1 status0`/PONG `value=902`、exit `0`；随后用户重启结束 RAM-only 会话 | 通过（每 1 秒 fresh PSCI 检测并自动唤醒，显式 rearm/重新启动及 p0 回归；不证明即时检测、自动恢复、suspend 安全、生产服务管理或重启后状态） |
+| RAM-only V4 受控停止 | Linux `STOP_REQUEST` 经 p0 控制面得到 `STOP_READY`，CPU3 `CPU_OFF` 后 fresh PSCI 为 `OFFLINE`；rearm 后可重启并再次受控停止 | Linux 7 核、`mailmsg_stop` 存在；首次 stop 后 2 秒 status `image=41008/41008 affinity=off (1) mailmsg_state=offline stop_sequence=1 stop_result=0 affinity_monitor=27/0 cpu_on_attempted=1 cpu_on_ret=0`，`m0c0 rx:1/0xb2a10000/0x0 tx:1/0 notify:0/1/0/0`、`a2b_now=0`、`magic=0x53544f50 current_el=4`。rearm 后 `image=0`/`unarmed`，重载 `mailmsg-controlled-stop.bin` + `start` 后 `active`/`on`；p0 `901` 返回 ACK `seq1 peer1 status0`、PONG `seq2 value902`、exit `0`；再次 stop `second_stop_exit=0`，status `offline stop_sequence=2 stop_result=0 affinity_monitor=64/0`，`m0c0 rx:3/0xb2a10000 tx:3/2 notify:0/3/0/0`、`magic=0x53544f50`。`stop_sequence=2` 仅计 Linux 出站 PING `seq1` 与 STOP_REQUEST `seq2`，反向 ACK/PONG 序号独立 | 通过（受控停止、显式 rearm/重启及第二次受控停止代表路径；不覆盖停止超时、`STOP_REFUSED`、通知失败、业务收尾、持久化或重启后状态） |
+| RAM-only V4 STOP_REFUSED 与数据面恢复 | Zephyr 拒绝 `STOP_REQUEST` 后 Linux 记录拒绝结果、保持 active/on，并可继续完成 p0 请求 | Linux `5.10.252`、`nproc=7`；加载 `41008 B` refusal candidate 后 active/on；`mailmsg_stop` exit `0`，status `affinity=on (0) mailmsg_state=active stop_sequence=1 stop_result=-125`，p0 `tx 1/0 notify 0/1`、`rx 1 0xb2a10000/0`；随后 p0 `901` 得 ACK `type=3 seq2 peer_seq2 status0`、PONG `type=2 seq3 value902`、exit `0`，仍 active/on | 通过（`STOP_REFUSED`→`-ECANCELED` 与数据面恢复代表路径；不覆盖停止超时或停止请求通知失败） |
+| MailMsg V1 version=6 生命周期与统计候选 | 构建 version=6 的 Linux、普通/测试 Zephyr 与主机测试，并为上板验证准备握手、统计、通知失败、超时、rearm/旧 fd/LLM 回归分组 | FIT `build/local/mailmsg-v1-final/mailmsg-v1-final.img` SHA-256 `eade522dbd360d2e42d4d42e39f7ad7340e31adab4b3229e246ea6991b7d2b50`；Image `00c72d...`、DTB `ef23d675...`、普通 Zephyr `1b2636...`、`controlled-stop` `e9ee4a...`、`start-timeout` `dcc335...`、`stop-timeout` `6f3c9c...`，四个 Zephyr 变体均为 `41008 B`；完整哈希见 `build/local/mailmsg-v1-final/artifact-manifest.txt`；Linux 完整 Image、通用主机测试及四个 Zephyr 构建均通过，尚未上板 | 待验证（仅主机构建；不提供板端 ABI、握手、统计、通知失败或超时结论） |
+| MailMsg V1 R6 主机产物整理与上传 | 主机校验并上传 8 个 artifact，板端可从 RAM 启动 FIT；不自动 U-Boot、不写启动分区 | 新增 `scripts/mailmsg-v1-test.sh`；四个 profile 为 `controlled`、`stop-refused`、`start-timeout`、`stop-timeout`；8 个 artifact 均完成板端 SHA-256 对照且成功；FIT `root@10.42.0.193:/userdata/mailmsg-v1-r6/mailmsg-v1-final.img`；板端当时为原厂 Linux `5.10.110`，未执行 R6 RAM 启动或板测 | 待验证（已上传、待 RAM 启动后板测；不提供 R6 运行时结论） |
+| MailMsg V1 R6 controlled 首次板测 | preflight、session、四 priority、exclusive reader、p0 CRC NACK、p3 通知失败恢复及 controlled STOP 代表路径 | Linux `5.10.252`、7 核；session `1/1 active`；上述分组均通过；queue-only 因此前置 A2B 后持续轮询导致 7 条已消费/反向 `depth=7` 而停止；随后 PONG `801..807` 全数回收、双向 `depth=0`，STOP 得 `offline/stop_reply=6/stop_result=0`、CPU3 `OFF` | 部分通过（不等于完整 R6 controlled 回归） |
+| MailMsg V1 R6 CPU_OFF 前 A2B 清理修复 | owner-side 四通道 A2B W1C 后回读，避免 CPU_OFF 前残留 pending | 终态原观察 `a2b_now=m0:0x1`；修复后 controlled-stop bin `41008 B`、SHA-256 `3876efefc0f5dd221d33fd089ca80b91dbce2187aff9bf4faefa164537b8aae6`，已上传且板端哈希对照通过；脚本已将 queue 测试移到首次 Linux A2B 前；fresh RAM 全量 controlled 回归两次均 `a2b_now=0` | 通过（修复已验证；其他 R6 profiles 与 LLM 仍待测） |
+| R6 controlled 修复后 fresh RAM 全量回归 | 正确顺序完成 queue、四 priority、异常恢复、rearm 和两轮 STOP，CPU_OFF 前 A2B 清零 | Linux `5.10.252`、7 核；session `1/1 active` 后第二次 `2/2 active`；7 槽满/第 8 条拒绝，PONG `801..807` 各一次且无覆盖，双向 `depth=0`；四 priority、exclusive reader、p0 `NACK_BAD_CRC`、p3 通知失败恢复 `711/712`、两轮 STOP 均通过，均观察 `a2b_now=0`、CPU3 `OFF`；报告 `build/local/mailmsg-v1-final/reports/controlled-20231122-045826.log`，SHA-256 `421288118401bc5690d95ede55370184ddb24a8ed00e7c769cc2f929adac66c4`，74 行/4972 字节 | 通过（controlled profile complete；其他 R6 profiles 与 LLM 仍待测） |
+| R6 stop-refused fresh RAM 回归 | rearm 后启动 session `3/3`；STOP 被拒绝且保持 active/on；拒绝后 p0 仍可完成业务响应 | controlled 后同一 RAM 内核 clean offline、`a2b=0`；p0 `1100`→ACK+PONG `1101`；STOP 后 `active`、affinity `on`、`stop_reply=7`、`stop_result=-125`、`stop_notify=0`、`a2b_now=0`；随后 p0 `900`→ACK+PONG `901`，所有 `depth=0`；报告 `build/local/mailmsg-v1-final/reports/stop-refused-20231122-050129.log`，SHA-256 `76a78cc1a2939e9f50b733d4c53c9a34f516653bb3ff076e7659ff77fbdb1b63`，38 行/3537 字节 | 通过（stop-refused；`start-timeout`、`stop-timeout` 与 LLM 仍待测） |
+| R6 start-timeout fresh RAM 回归 | CPU3 未完成 `SESSION_READY` 时 START 进入终态超时，p0 数据面返回超时错误 | 初始 `unarmed`、session `0/0`、CPU3 `off`；加载并启动 start-timeout 固件后 affinity `on`、`mailmsg_state=start-timeout`、session `1/0`、`session_result=-110`；`/dev/mailmsg-p0` 返回 `Connection timed out`，profile 报告 `PASS`；报告 `build/local/mailmsg-v1-final/reports/start-timeout-20231122-045833.log`，SHA-256 `8628edfb934e02f36468e03b447ec4881f99dd4fc24e412917baa923f821cac2`，2218 字节 | 通过（start-timeout；测试后需 fresh U-Boot RAM boot；`stop-timeout` 与 LLM 仍待测） |
+| R6 stop-timeout fresh RAM 回归 | CPU3 已完成 `SESSION_READY` 后 STOP 进入终态超时，stop 结果及 p1 数据面返回超时错误 | 初始 `unarmed`、session `0/0`、CPU3 `off`；加载专用固件后 `SESSION_READY generation=1`、`active session=1/1`；p1 ACK+PONG `1301`；STOP 后 `mailmsg_state=stop-timeout`、`stop_result=-110`、`stop_reply=0`、`stop_notify=0`、affinity `on`；`/dev/mailmsg-p1` 返回 `Connection timed out`，profile 报告 `PASS`；报告 `build/local/mailmsg-v1-final/reports/stop-timeout-20231122-050100.log`，SHA-256 `be083f02c83549d7a1c87ec5eff65c0eea69b5e9009cfd4d2839e0974152b53c`，2245 字节 | 通过（stop-timeout；测试后需 fresh RAM boot；LLM 仍待测） |
+| R6 与 RKLLM 共存 fresh RAM 回归 | 普通 MailMsg session active 时 RKLLM 初始化/生成成功，推理期间 p2 与推理后 p0 仍可完成回环，统计无错误 | Linux `5.10.252`、7 核；普通 bin `active session=1/1`；Runtime `1.3.0`、RKNPU `0.9.8`、Enabled CPUs `[3,4,5,6]`/4，`ok`→`Alright,`、exit `0`；p0 `41→ACK+PONG 42`、推理期间 p2 PING/PONG `1501..1516`、p0 `1401→1402` 及 `1499→1500`；终态 `active/session=1/1`、CPU3 `on`、`a2b_now=0`，p0 `tx=3/depth=0/rx=7/errors=0`，p2 `tx=16/rx=16/depth=0/errors=0`；报告 `build/local/mailmsg-v1-final/reports/llm-coexistence-20260831.log`，SHA-256 `f1f67016e039c91f4673fa4f2289edb7363fa92a2776de152fa55c45f792e1ba`，2200 字节 | 通过（R6 本轮定义的 RAM-only 验证范围；不覆盖产品化、持久化及并发压力等边界） |
+| R6 里程碑冻结与长期证据附件 | 保存本地源码身份、五份脱敏报告及其来源/校验关系，不提交大型产物 | `study/r1-dts-port` 本地 commit `dcb7dfd7b`；冻结目录 `build/local/releases/mailmsg-v1-r6-20260831/`；五份报告已复制至 `doc/_assets/mailmsg-r6/` 并在步骤 56 提供来源、附件链接和 SHA-256 | 进行中（本机冻结准备；final manifest/只读待完成，不表示主仓库已推送或大型产物已提交） |
 
 ## 结论
 
@@ -627,4 +756,4 @@ mpidr=0x300 level=0 state=off (1)
 
 补充结论（2026-08-28，RAM-only 硬件验证）：在最终 FIT SHA-256 `f8709830d4411b620f02a1a2d29ec3f08d9f709c61cb22b18e27d93067fd3083` 上 CPU3 已启动。板端状态为 `m0c0=rx:1/0xb2a10000/0x0,tx:1/-16,notify:1/1/1/0`、`a2b_now=m0:0`、`mailmsg_notify=1`；最后通知结果为 `COALESCED`，发送计数 1、合并计数 1、失败计数 0，`-16` 是内核 `EBUSY` 作为观察到的门铃 pending 原因，不是消息入队失败。p0 两次连续请求分别返回 ACK `seq1 peer1 status0`、PONG `seq2 value101`，以及 ACK `seq3 peer2 status0`、PONG `seq4 value201`。该结果限于 mailbox0 ch0：第二条消息合并到既有 A2B pending 门铃且未占 Linux core TX 队列；不等价于高并发或压力测试。
 
-- [ ] 在不改变持久化启动介质的前提下，验证通知三态在并发、压力及其他 mailbox 通道下的边界；保持入队结果与通知结果分离，暂不自动重传、接入 RPMsg 或写入 eMMC。
+- [ ] 结束当前 stop-timeout RAM 会话，执行 fresh U-Boot RAM boot 后验证 LLM 回归；四个 R6 profiles 均已验证，但 R6 整体仍未完成，不写入 eMMC。

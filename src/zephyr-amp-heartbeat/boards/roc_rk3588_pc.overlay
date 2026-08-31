@@ -1,0 +1,9 @@
+/*
+ * This is deliberately a CPU-start smoke test, not an IPC or peripheral test.
+ * Linux continues to own the GIC distributor and Debug UART.  GIC remains
+ * enabled so the SoC timer dependency is met; CONFIG_GIC_SAFE_CONFIG avoids
+ * distributor reconfiguration when it has already been enabled by Linux.
+ */
+&uart2 {
+	status = "disabled";
+};

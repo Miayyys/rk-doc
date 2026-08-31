@@ -9,6 +9,10 @@
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 
+#if defined(MAILMSG_TEST_SELF_OFF_VALUE) || defined(MAILMSG_ENABLE_STOP_CONTROL)
+#include <zephyr/drivers/pm_cpu_ops.h>
+#endif
+
 #include "../../mailmsg/mailmsg_endpoint.h"
 
 #define AMP_STATUS_ADDR       0x500ff000UL
@@ -54,11 +58,23 @@
 #define MARK_A2B_CLEAR_PROBE    0x41434b43U   /* "ACKC" */
 #define MARK_MAILMSG_BAD_CRC    0x43524345U   /* "CRCE" */
 #define MARK_MAILMSG_INVALID    0x494e564cU   /* "INVL" */
+#define MARK_CPU_STOPPING       0x53544f50ULL /* "STOP" */
+#define MARK_CPU_STOP_FAILED    0x53544641ULL /* "STFA" */
 
 /* Test-only build override.  Keeping an A2B bit pending verifies that a
  * second queued frame maps to COALESCED rather than a data-plane failure. */
 #ifndef MAILMSG_TEST_HOLD_A2B_USEC
 #define MAILMSG_TEST_HOLD_A2B_USEC 0U
+#endif
+
+/* Test-only override: leave one chosen priority queued so the Linux writer
+ * can exercise its own -ENOSPC path.  The default skips no priority. */
+#ifndef MAILMSG_TEST_SKIP_PRIORITY
+#define MAILMSG_TEST_SKIP_PRIORITY MAILMSG_PRIORITY_COUNT
+#endif
+
+#if defined(MAILMSG_TEST_SELF_OFF_VALUE) || defined(MAILMSG_ENABLE_STOP_CONTROL)
+static void mailmsg_cpu_off_after_ready(void);
 #endif
 
 #define RK3588_GICD_BASE       0xfe600000UL
@@ -156,6 +172,10 @@ static mm_reg_t gicd;
 static volatile bool mailbox_irq_seen;
 static uint32_t mailmsg_rx_error_count;
 static bool mailmsg_endpoint_ready;
+#ifndef MAILMSG_TEST_SKIP_SESSION_READY
+static bool mailmsg_session_ready_committed;
+static bool mailmsg_session_ready_published;
+#endif
 static volatile struct amp_mbox_observation_line *const mailbox_observation =
 	(volatile struct amp_mbox_observation_line *)AMP_MBOX_OBS_ADDR;
 static volatile struct mailmsg_tx_full_observation *const mailmsg_tx_full_observation =
@@ -254,6 +274,69 @@ static bool mailmsg_send_feedback(uint32_t priority, uint32_t type,
 	return ret == MAILMSG_ENDPOINT_OK;
 }
 
+/* STOP_READY must have both a committed frame and an accepted doorbell before
+ * CPU3 goes offline.  A regular endpoint send reports queue admission even
+ * if its notification backend failed, which is insufficient for this edge. */
+static bool mailmsg_send_stop_feedback(uint32_t type, uint32_t peer_sequence,
+				       uint32_t status)
+{
+	struct mailmsg_send_result result;
+	uint8_t payload[MAILMSG_FEEDBACK_BYTES] = { 0 };
+	int ret;
+
+	mailmsg_store_payload_u32(&payload[MAILMSG_FEEDBACK_SEQUENCE_OFFSET],
+				  peer_sequence);
+	mailmsg_store_payload_u32(&payload[MAILMSG_FEEDBACK_STATUS_OFFSET], status);
+	ret = mailmsg_endpoint_send(&cpu3_endpoint, MAILMSG_PRIO_CRITICAL, type,
+				    payload, sizeof(payload), &result);
+	if (ret) {
+		mailmsg_record_tx_full(MAILMSG_PRIO_CRITICAL, type, &result);
+		return false;
+	}
+
+	return mailmsg_notify_accepted(result.notify_result);
+}
+
+/* Publish the session identity only after CPU3 has bound the shared ABI and
+ * enabled every A2B interrupt.  Linux keeps user traffic closed until this
+ * exact generation/version pair arrives on p0. */
+#ifndef MAILMSG_TEST_SKIP_SESSION_READY
+static void mailmsg_service_session_ready(void)
+{
+	struct mailmsg_send_result result;
+	uint8_t payload[MAILMSG_SESSION_BYTES] = { 0 };
+	int ret;
+
+	if (!mailmsg_endpoint_ready || mailmsg_session_ready_published)
+		return;
+	/* If the frame was committed but its doorbell failed, retry only the
+	 * notification.  Enqueuing another READY would leave a duplicate p0
+	 * control frame after Linux has already opened the data plane. */
+	if (mailmsg_session_ready_committed) {
+		ret = mailmsg_cpu3_notify(NULL, MAILMSG_PRIO_CRITICAL);
+		if (mailmsg_notify_accepted(ret))
+			mailmsg_session_ready_published = true;
+		return;
+	}
+
+	mailmsg_store_payload_u32(&payload[MAILMSG_SESSION_GENERATION_OFFSET],
+				  cpu3_endpoint.generation);
+	mailmsg_store_payload_u32(&payload[MAILMSG_SESSION_VERSION_OFFSET],
+				  MAILMSG_PROTOCOL_VERSION);
+	ret = mailmsg_endpoint_send(&cpu3_endpoint, MAILMSG_PRIO_CRITICAL,
+				    MAILMSG_MSG_SESSION_READY, payload,
+				    sizeof(payload), &result);
+	if (ret) {
+		mailmsg_record_tx_full(MAILMSG_PRIO_CRITICAL,
+				       MAILMSG_MSG_SESSION_READY, &result);
+		return;
+	}
+	mailmsg_session_ready_committed = true;
+	mailmsg_session_ready_published =
+		mailmsg_notify_accepted(result.notify_result);
+}
+#endif
+
 static bool mailmsg_send_pong(uint32_t priority,
 			      const struct mailmsg_message *request)
 {
@@ -319,10 +402,17 @@ static void mailmsg_pingpong_test_service(void)
 
 	if (!mailmsg_endpoint_ready)
 		return;
+#ifndef MAILMSG_TEST_SKIP_SESSION_READY
+	if (!mailmsg_session_ready_published)
+		return;
+#endif
 
 	for (priority = 0; priority < MAILMSG_PRIORITY_COUNT; priority++) {
 		struct mailmsg_message request;
 		int pop_ret;
+
+		if (priority == MAILMSG_TEST_SKIP_PRIORITY)
+			continue;
 
 		for (;;) {
 			pop_ret = mailmsg_endpoint_receive(
@@ -353,6 +443,38 @@ static void mailmsg_pingpong_test_service(void)
 				}
 				break;
 			}
+
+			if (priority == MAILMSG_PRIO_CRITICAL &&
+			    request.type == MAILMSG_MSG_STOP_REQUEST) {
+				if (request.length != 0U) {
+					(void)mailmsg_send_stop_feedback(
+						MAILMSG_MSG_STOP_REFUSED, request.sequence,
+						MAILMSG_STOP_REFUSED_INVALID_REQUEST);
+					continue;
+				}
+
+			#ifdef MAILMSG_ENABLE_STOP_CONTROL
+				/* STOP_READY is the one control confirmation for this request;
+				 * do not add the ordinary p0 ACK/NOP pair. */
+				if (mailmsg_send_stop_feedback(MAILMSG_MSG_STOP_READY,
+							       request.sequence, 0U))
+					mailmsg_cpu_off_after_ready();
+			#else
+				(void)mailmsg_send_stop_feedback(MAILMSG_MSG_STOP_REFUSED,
+							 request.sequence,
+							 MAILMSG_STOP_REFUSED_BUSY);
+			#endif
+				continue;
+			}
+
+			#ifdef MAILMSG_TEST_SELF_OFF_VALUE
+			if (priority == MAILMSG_PRIO_CRITICAL &&
+			    request.type == MAILMSG_MSG_PING &&
+			    request.length == sizeof(uint32_t) &&
+			    mailmsg_payload_u32(request.payload) ==
+				MAILMSG_TEST_SELF_OFF_VALUE)
+				mailmsg_cpu_off_after_ready();
+			#endif
 
 			if (mailmsg_priority_is_reliable(priority))
 				(void)mailmsg_send_feedback(priority, MAILMSG_MSG_ACK,
@@ -456,6 +578,51 @@ void z_arm64_el1_plat_init(void)
 	r1_amp_checkpoint_c(MARK_EL1_INIT);
 }
 
+#if defined(MAILMSG_TEST_SELF_OFF_VALUE) || defined(MAILMSG_ENABLE_STOP_CONTROL)
+static void mailmsg_cpu_off_after_ready(void)
+{
+	unsigned int key;
+	int ret;
+	uint32_t controller;
+	uint32_t index;
+	uint32_t pending;
+
+	/* Stop accepting doorbells before publishing the terminal state. */
+	key = irq_lock();
+	for (index = 0; index < RK3588_MAILBOX_CHANNELS; index++)
+		irq_disable(RK3588_MBOX_A2B_IRQ_FOR(index));
+	(void)key;
+
+	/* The main loop may consume STOP_REQUEST before its level IRQ handler
+	 * gets a chance to acknowledge A2B_STATUS.  Linux deliberately refuses
+	 * rearm while any old-session doorbell is pending, so quiesce all four
+	 * priority bits after IRQ disable and before PSCI CPU_OFF.  STOPPING has
+	 * already closed the Linux data plane; no legitimate new A2B producer
+	 * can race this final owner-side acknowledgement. */
+	for (controller = 0; controller < RK3588_MAILBOX_CONTROLLERS;
+	     controller++) {
+		pending = sys_read32(mailbox[controller] + MAILBOX_A2B_STATUS) &
+			  GENMASK(RK3588_MAILBOX_CHANNELS - 1U, 0U);
+		if (pending)
+			sys_write32(pending,
+				    mailbox[controller] + MAILBOX_A2B_STATUS);
+	}
+	amp_dsb();
+	for (controller = 0; controller < RK3588_MAILBOX_CONTROLLERS;
+	     controller++)
+		(void)sys_read32(mailbox[controller] + MAILBOX_A2B_STATUS);
+	amp_dsb();
+
+	r1_amp_checkpoint_c(MARK_CPU_STOPPING);
+	ret = pm_cpu_off();
+
+	/* PSCI CPU_OFF must not return on success. */
+	r1_amp_checkpoint_c(MARK_CPU_STOP_FAILED | ((uint32_t)(-ret) & 0xffffU));
+	for (;;)
+		__asm__ volatile ("wfe");
+}
+#endif
+
 int main(void)
 {
 	volatile struct amp_payload_line *const request =
@@ -492,6 +659,11 @@ int main(void)
 	mailmsg_snapshot_gic_routes();
 	irq_enable(RK3588_MBOX_A2B_IRQ_FOR(0)); irq_enable(RK3588_MBOX_A2B_IRQ_FOR(1));
 	irq_enable(RK3588_MBOX_A2B_IRQ_FOR(2)); irq_enable(RK3588_MBOX_A2B_IRQ_FOR(3));
+	if (mailmsg_endpoint_ready) {
+#ifndef MAILMSG_TEST_SKIP_SESSION_READY
+		mailmsg_service_session_ready();
+#endif
+	}
 	for (;;) {
 		uint64_t sequence;
 		uint64_t sequence_inv;
@@ -530,6 +702,10 @@ int main(void)
 			mailmsg_send_b2a_ack((uint32_t)sequence);
 			last_sequence = sequence;
 		}
+
+#ifndef MAILMSG_TEST_SKIP_SESSION_READY
+		mailmsg_service_session_ready();
+#endif
 
 		/* The normal data-plane contract is queue then doorbell.  Do not poll
 		 * a fresh queue before its first interrupt: it lets the queue-full

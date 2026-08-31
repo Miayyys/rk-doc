@@ -1,3 +1,17 @@
 doc/.obsidian/*
 !doc/.obsidian/app.json
 !doc/.obsidian/templates.json
+doc/.agents/
+doc/.claude/
+doc/.opencode/
+doc/copilot/
+R1/
+build/
+out/
+src/rknn-llm/
+src/rknn-llm-release-v1.2.1b1/
+src/rockchip-linux-kernel-develop-5-10/
+src/rockchip-linux-kernel-r1-dts-port/
+src/youyeetoo-r1-linux-kernel-5-10/
+src/u-boot-upstream/
+src/rkbin/

@@ -1,0 +1,23 @@
+
+[05:01:00] MailMsg V1 revision 6 board profile: stop-timeout
+report=/userdata/mailmsg-v1-r6/reports/stop-timeout-20231122-050100.log
+PASS: R1 artifact hashes
+
+--- diagnostic snapshot ---
+image=0/41008 affinity=not-queried (0) affinity_seen_on=0 mailmsg_state=unarmed session=0/0 session_result=-11 stop_sequence=0 stop_reply=0 stop_result=-11 stop_notify=-11 affinity_monitor=0/0 cpu_on_attempted=0 cpu_on_ret=-11 m0c0=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c1=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c2=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c3=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 a2b_now=m0:0x0 mailmsg_notify=-11 notify_inject=0/-5/0 mailmsg_tx_full=valid:1/commit:1/count:0/priority:4/type:0/result:0 mbox_observation=0x52544553/0x0/0x64/0x0 magic=0x4842062f current_el=4
+p0 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+p1 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+p2 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+p3 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+mpidr=0x300 level=0 state=off (1)
+--- end snapshot ---
+PASS: V6 kernel/DT/sysfs preflight
+
+[05:01:00] loading mailmsg-v1-stop-timeout.bin into the reserved CPU3 image window
+PASS: SESSION_READY generation 1 and ACTIVE state
+priority=1 type=3 sequence=2 length=8 peer_sequence=1 status=0
+priority=1 type=2 sequence=3 length=4 value=1301
+image=41008/41008 affinity=on (0) affinity_seen_on=1 mailmsg_state=stop-timeout session=1/1 session_result=0 stop_sequence=2 stop_reply=0 stop_result=-110 stop_notify=0 affinity_monitor=5/0 cpu_on_attempted=1 cpu_on_ret=0 m0c0=rx:1/0xb2a10000/0x0,tx:1/0,notify:0/1/0/0 m0c1=rx:1/0xb2a10001/0x1,tx:1/0,notify:0/1/0/0 m0c2=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c3=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 a2b_now=m0:0x0 mailmsg_notify=0 notify_inject=0/-5/0 mailmsg_tx_full=valid:1/commit:1/count:0/priority:4/type:0/result:0 mbox_observation=0x41434b43/0x1/0x0/0x1 magic=0x48420000 current_el=4
+/dev/mailmsg-p1: Connection timed out
+PASS: STOP timeout is terminal and CPU3 remains ON
+A fresh U-Boot RAM boot is required before another profile.

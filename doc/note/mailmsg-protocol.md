@@ -3,7 +3,7 @@ title: "MailMsg 协议设计说明"
 type: note
 status: draft
 created: 2026-08-27
-updated: 2026-08-30
+updated: 2026-08-31
 tags: [rk3588, amp, ipc, mailmsg, shared-memory]
 aliases: ["MailMsg protocol"]
 related:
@@ -56,18 +56,19 @@ Linux→Zephyr 与 Zephyr→Linux 两个方向各有四个独立队列：
 
 ## 帧与可见性
 
-共享内存区头包含 `version`，用于标识当前 ABI；当前候选为 `version=3`，且 `version` 不是每帧字段。V3 的具体字节布局以实现 ABI 为准，每帧包含：
+共享内存区头包含 `version`，用于标识当前 ABI；本轮候选名称仍为 MailMsg V1，但共享区结构版本已为 `version=6`，且 `version` 不是每帧字段。V6 的具体字节布局以实现 ABI 为准，每帧包含：
 
 | 字段 | 职责 |
 | --- | --- |
+| `generation` | 标识本次共享区会话；属于 CRC 覆盖内容 |
 | `type` | 区分数据、ACK、NACK 等消息类型 |
 | `sequence` | 标识本端消息，用于反馈关联 |
 | `length` | 表示 payload 有效长度 |
-| `payload[32]` | 承载消息内容的 payload 区域 |
+| `payload[28]` | 承载 wire 消息内容的 payload 区域 |
 | `crc32` | 检查帧内容完整性 |
 | `commit` | 表示帧已按顺序发布，可被消费 |
 
-V1 的 48 B frame 和 V2 的 `version=2`、`crc32`、52 B frame 是历史验证 ABI；当前协议为 V3 draft，版本由共享区头表达。当前模型只有 `commit` 发布标记，不存在 `commit`/`ready` 二选一；它不能替代 CRC32。CRC32 只检查完整性，不能表示应用已经完成处理。
+V1 的 48 B frame、V2 的 `version=2`、V3 的 `version=3`、V4 的 `version=4` 与此前 V5 draft 是历史候选/验证记录；当前候选使用 `version=6`，版本由共享区头表达。wire payload 已从 32 B 调整为 28 B；`mailmsg_user_frame` 仍保持 48 B，但旧的第 29–32 字节 payload 行为不兼容，不能据旧布局解释新帧。当前模型只有 `commit` 发布标记，不存在 `commit`/`ready` 二选一；它不能替代 CRC32。CRC32 只检查完整性，不能表示应用已经完成处理。
 
 生产者发布顺序为：
 
@@ -105,11 +106,41 @@ priority 0/1 收到完整且 CRC 正确的帧后发送 ACK；CRC 或其他有效
 
 实现还可以提供发送方向的 TX-full 诊断状态（例如计数、priority、消息类型和错误结果）供观察；这只是报告，不改变入队、通知、重试、重排或丢弃策略。发送端应用仍自行决定后续处置。
 
+## V4 受控停止控制面
+
+V4（共享区 `version=4`）在 p0（`critical`）控制面增加三种消息类型：
+
+| type | 名称 | 语义 |
+| ---: | --- | --- |
+| 5 | `STOP_REQUEST` | Linux 请求 CPU3 受控停止；当前定义为空 payload。 |
+| 6 | `STOP_READY` | CPU3 已接受停止请求并准备执行 `CPU_OFF`；反馈 payload 关联原请求 `sequence`，并携带状态码。 |
+| 7 | `STOP_REFUSED` | CPU3 拒绝停止请求；反馈 payload 关联原请求 `sequence`，并携带拒绝原因（例如 invalid request 或 busy）。 |
+
+受控停止的控制面顺序为：Linux 发出 p0 `STOP_REQUEST`，CPU3 在确认请求后发送 `STOP_READY` 或 `STOP_REFUSED`。`STOP_READY` 只有在反馈帧已 commit 且通知被接受后，CPU3 才进入停止路径；随后停止接收门铃、发布停止标记并执行 Zephyr `pm_cpu_off`。Linux 使用 `stop_sequence`/`stop_result` 记录控制事务，最终由 fresh PSCI affinity 观察确认 CPU3 `OFF` 并将 MailMsg 状态置为 `offline`。控制反馈由内核控制面消费，不交给普通用户态 p0 reader。
+
+序号属于各 endpoint 的本端出站空间：Linux endpoint 的 `next_sequence` 只被 Linux 发出的帧（例如 PING、`STOP_REQUEST`）推进；Zephyr 反向 ACK/PONG 使用自己的序号空间，不计入 Linux 的 `next_sequence`。因此一次 Linux PING `seq1` 后的 `STOP_REQUEST` 可以是 `seq2`，即使期间已经收到反向 ACK/PONG。
+
+Linux 侧的生命周期状态是本地控制面状态，不是共享区帧字段：`unarmed`、`active`、`stopping`、`offline`。`mailmsg_stop` 代表路径已在 RAM-only 板端验证；该 V4 记录不覆盖停止超时、通知失败、业务收尾和持久化。R6 V1 version=6 的 stop-timeout profile 已在下节单独验证。该控制面不定义自动恢复，也不改变发送端不自动重传的协议边界。
+
+STOP_REFUSED 代表路径已在 RAM-only 板端验证：Linux 的 `mailmsg_stop` 请求被 Zephyr 拒绝后，控制面将 `stop_result=-125` 标准化为 `-ECANCELED`，保持 `active`/affinity `on`，随后 p0 仍可完成 ACK 与业务 PONG。写入 `mailmsg_stop` 成功只表示请求进入控制面，不表示停止已接受。上述 V4 记录不覆盖停止超时和停止请求通知失败；R6 V1 version=6 的 stop-timeout 已在下节单独验证。
+
+## V6 生命周期与可观测性候选及 R6 验证范围
+
+本轮候选继续使用 MailMsg V1 名称，但共享区结构版本从 V5 draft 调整为 `version=6`。共享 generation 为逐帧字段并纳入 CRC；CPU3 以 `SESSION_READY` 携带 generation/version 参与握手，正常候选的上板检查项包括本地与对端 generation 均为非零且相等。
+
+候选实现包含 Linux `STARTING` gate、`STARTING`/`STOPPING` 时的数据面与 sysfs 门控，以及 5 秒 `START`/`STOP` timeout。`start-timeout` 与 `stop-timeout` 是终态，晚到的响应不能使生命周期重新 active；`STOP_READY` 另有独立的 5 秒 `CPU_OFF` deadline。`offline` response 不消费。
+
+生命周期阶段中，affinity worker 每秒执行一次兜底的 p0 drain，以覆盖 COALESCED 造成的 lost wakeup；Zephyr 的 READY `bind`、`commit`、`published` 状态分离，重试只针对 doorbell。测试用通知失败注入不作用于 STOP lifecycle。Linux 本地每个 priority 的统计包含 depth、high-water、notify、rx 和 stale。
+
+Linux 完整 Image、通用主机四项单元测试（均 exit `0`）、普通 Zephyr 以及 `controlled-stop`、`start-timeout`、`stop-timeout` 三种测试 Zephyr 变体均已构建通过。主候选 FIT 为 `build/local/mailmsg-v1-final/mailmsg-v1-final.img`，SHA-256 为 `eade522dbd360d2e42d4d42e39f7ad7340e31adab4b3229e246ea6991b7d2b50`；Image/DTB SHA-256 前缀为 `00c72d...`/`ef23d675...`；普通及三种测试 Zephyr 均为 `41008 B`，SHA-256 前缀分别为普通 `1b2636...`、`controlled-stop` `e9ee4a...`、`start-timeout` `dcc335...`、`stop-timeout` `6f3c9c...`。完整哈希见 `build/local/mailmsg-v1-final/artifact-manifest.txt`。上述构建产物均只用于 RAM-only 测试；R6 的 `controlled`、`stop-refused`、`start-timeout`、`stop-timeout` 四个 profile 已在 fresh RAM-only 会话完成板端验证，但这不等于 V6 候选所有功能或完整产品已验证。
+
+R6 板端分组已覆盖正常握手/四 priority 与统计、通知失败、START timeout、STOP_REFUSED/STOP_READY/STOP timeout，以及 rearm、旧 fd 等路径。随后在普通 `mailmsg-v1-normal.bin` 上完成 RKLLM 共存回归：Runtime `1.3.0`、RKNPU `0.9.8`、Enabled CPUs `[3,4,5,6]`/4，初始化和 `ok`→`Alright,` 通过，推理期间 p2 及之后 p0 回环统计无错误。由此，R6 本轮定义的四 profiles + LLM 共存 RAM-only 验证范围已完成；仍不等于完整产品或持久化完成，并发压力、长期稳定性、吞吐/延迟、大数据、崩溃恢复、suspend、eMMC 等未覆盖。故障候选测试后需要 fresh RAM boot，协议不自动重传。
+
 ## 当前实现与证据范围
 
-V3 当前 endpoint 集成的 mailbox0 四通道后端代表路径已完成 RAM-only 板端验证：四个 priority 的正常消息均按其固定策略返回，p0 的 CRC 坏帧返回 NACK 且无 PONG；p0/p1 ACK/NACK、p2 无反馈、p3 正常路径及 queue-full 代表路径，以及 mailbox0 ch0 的 `COALESCED` 也已有相应实验记录。主机 endpoint/protocol/notify/mailbox0 测试和完整 ARM64 Image 构建已通过。上述结果证明代表路径的协议语义，不等于完整产品验证。
+当前 endpoint 集成的 mailbox0 四通道后端代表路径已完成 RAM-only 板端验证：四个 priority 的正常消息均按其固定策略返回，p0 的 CRC 坏帧返回 NACK 且无 PONG；p0/p1 ACK/NACK、p2 无反馈、p3 正常路径及 queue-full 代表路径，以及 mailbox0 ch0 的 `COALESCED` 也已有相应实验记录。V4 受控停止 p0 控制面另有代表路径验证。主机 endpoint/protocol/notify/mailbox0 测试和完整 ARM64 Image 构建已通过。上述结果证明代表路径的协议语义，不等于完整产品验证。
 
-尚未由这些实验覆盖的范围包括：并发、高负载、长期稳定性、吞吐性能、更广泛的通道组合、eMMC 持久化、通知异常的压力边界和自动重传。p3 满队列与 p0 跨 priority 隔离已有代表路径证据，但不替代上述范围的验证；详细镜像、校验值、命令输出及逐次排障过程保留在[共享内存 PING 实验记录](../experiment/exp-20260822-001-build-r1-amp-shmem-ping.md)中。
+尚未由这些实验覆盖的范围包括：并发压力、高负载、长期稳定性、吞吐/延迟、大载荷、崩溃恢复、suspend、更广泛的通道组合、eMMC 持久化、通知异常的压力边界和自动重传。p3 满队列与 p0 跨 priority 隔离已有代表路径证据，但不替代上述范围的验证；详细镜像、校验值、命令输出及逐次排障过程保留在[共享内存 PING 实验记录](../experiment/exp-20260822-001-build-r1-amp-shmem-ping.md)中。
 
 ## 参考决策
 
