@@ -22,6 +22,7 @@
 #define AMP_RSP_COMMIT_ADDR   (AMP_STATUS_ADDR + 0x100UL)
 #define AMP_MBOX_OBS_ADDR     (AMP_STATUS_ADDR + 0x140UL)
 #define AMP_MAILMSG_TX_FULL_OBS_ADDR (AMP_STATUS_ADDR + 0x180UL)
+#define AMP_MAILMSG_WORKER_OBS_ADDR (AMP_STATUS_ADDR + 0x1c0UL)
 #define AMP_QUEUE_ADDR        (AMP_STATUS_ADDR + 0x200UL)
 #define AMP_CACHE_LINE_SIZE   64U
 
@@ -40,6 +41,7 @@
 #define MAILBOX_RX_CHANNEL    0U
 
 #define AMP_CMD_PING          1U
+#define AMP_MBOX_RAW_TEST_CMD 0xa2b00000U
 #define AMP_MBOX_PROTOCOL_CMD 0xa2b10000U
 #define AMP_MBOX_PROTOCOL_ACK 0xb2a10000U
 #define AMP_STATUS_OK         0
@@ -60,6 +62,9 @@
 #define MARK_MAILMSG_INVALID    0x494e564cU   /* "INVL" */
 #define MARK_CPU_STOPPING       0x53544f50ULL /* "STOP" */
 #define MARK_CPU_STOP_FAILED    0x53544641ULL /* "STFA" */
+#define MAILMSG_WORKER_OBSERVATION_MAGIC 0x4d455654U /* "MEVT" */
+#define MAILMSG_WORKER_STACK_SIZE 2048U
+#define MAILMSG_WORKER_DRAIN_QUOTA (MAILMSG_RING_SLOTS - 1U)
 
 /* Test-only build override.  Keeping an A2B bit pending verifies that a
  * second queued frame maps to COALESCED rather than a data-plane failure. */
@@ -112,12 +117,30 @@ struct amp_mbox_observation_line {
 	uint8_t reserved[AMP_CACHE_LINE_SIZE - 16U];
 } __attribute__((aligned(AMP_CACHE_LINE_SIZE)));
 
+struct mailmsg_worker_observation_line {
+	uint32_t magic;
+	uint32_t commit;
+	uint32_t commit_inv;
+	uint32_t irq_count;
+	uint32_t wake_count;
+	uint32_t drain_count;
+	uint32_t message_count;
+	uint32_t empty_wake_count;
+	uint32_t last_pending;
+	uint32_t pending_now;
+	uint32_t last_priority;
+	uint8_t reserved[AMP_CACHE_LINE_SIZE - 44U];
+} __attribute__((aligned(AMP_CACHE_LINE_SIZE)));
+
 _Static_assert(sizeof(struct amp_payload_line) == AMP_CACHE_LINE_SIZE,
 	       "payload must occupy one cache line");
 _Static_assert(sizeof(struct amp_commit_line) == AMP_CACHE_LINE_SIZE,
 	       "commit must occupy one cache line");
 _Static_assert(sizeof(struct amp_mbox_observation_line) == AMP_CACHE_LINE_SIZE,
 	       "mailbox observation must occupy one cache line");
+_Static_assert(sizeof(struct mailmsg_worker_observation_line) ==
+	       AMP_CACHE_LINE_SIZE,
+	       "worker observation must occupy one cache line");
 _Static_assert(sizeof(struct mailmsg_tx_full_observation) == AMP_CACHE_LINE_SIZE,
 	       "MailMsg TX-full observation must occupy one cache line");
 
@@ -169,7 +192,11 @@ static void mailmsg_store_payload_u32(uint8_t payload[4], uint32_t value)
 
 static mm_reg_t mailbox[RK3588_MAILBOX_CONTROLLERS];
 static mm_reg_t gicd;
-static volatile bool mailbox_irq_seen;
+static atomic_t mailmsg_pending_priorities;
+static atomic_t mailmsg_irq_count;
+K_SEM_DEFINE(mailmsg_work_sem, 0, 1);
+K_THREAD_STACK_DEFINE(mailmsg_worker_stack, MAILMSG_WORKER_STACK_SIZE);
+static struct k_thread mailmsg_worker_thread;
 static uint32_t mailmsg_rx_error_count;
 static bool mailmsg_endpoint_ready;
 #ifndef MAILMSG_TEST_SKIP_SESSION_READY
@@ -180,11 +207,47 @@ static volatile struct amp_mbox_observation_line *const mailbox_observation =
 	(volatile struct amp_mbox_observation_line *)AMP_MBOX_OBS_ADDR;
 static volatile struct mailmsg_tx_full_observation *const mailmsg_tx_full_observation =
 	(volatile struct mailmsg_tx_full_observation *)AMP_MAILMSG_TX_FULL_OBS_ADDR;
+static volatile struct mailmsg_worker_observation_line *const
+	mailmsg_worker_observation =
+	(volatile struct mailmsg_worker_observation_line *)
+	AMP_MAILMSG_WORKER_OBS_ADDR;
 static volatile struct mailmsg_shared *const amp_queue =
 	(volatile struct mailmsg_shared *)AMP_QUEUE_ADDR;
 static struct mailmsg_endpoint cpu3_endpoint;
 static uint32_t mailmsg_tx_full_commit;
 static uint32_t mailmsg_tx_full_count;
+static uint32_t mailmsg_worker_commit;
+static uint32_t mailmsg_worker_wake_count;
+static uint32_t mailmsg_worker_drain_count;
+static uint32_t mailmsg_worker_message_count;
+static uint32_t mailmsg_worker_empty_wake_count;
+
+static void mailmsg_publish_worker_observation(uint32_t last_pending,
+					       uint32_t last_priority)
+{
+	uint32_t commit = ++mailmsg_worker_commit;
+
+	if (!commit)
+		commit = ++mailmsg_worker_commit;
+	mailmsg_worker_observation->commit = 0U;
+	mailmsg_worker_observation->magic = MAILMSG_WORKER_OBSERVATION_MAGIC;
+	mailmsg_worker_observation->irq_count = atomic_get(&mailmsg_irq_count);
+	mailmsg_worker_observation->wake_count = mailmsg_worker_wake_count;
+	mailmsg_worker_observation->drain_count = mailmsg_worker_drain_count;
+	mailmsg_worker_observation->message_count = mailmsg_worker_message_count;
+	mailmsg_worker_observation->empty_wake_count =
+		mailmsg_worker_empty_wake_count;
+	mailmsg_worker_observation->last_pending = last_pending;
+	mailmsg_worker_observation->pending_now =
+		atomic_get(&mailmsg_pending_priorities);
+	mailmsg_worker_observation->last_priority = last_priority;
+	mailmsg_worker_observation->commit_inv = ~commit;
+	amp_dsb();
+	mailmsg_worker_observation->commit = commit;
+	(void)sys_cache_data_flush_range((void *)mailmsg_worker_observation,
+					 AMP_CACHE_LINE_SIZE);
+	amp_dsb();
+}
 
 /*
  * This is test-service diagnostics, not a MailMsg transport policy.  CPU3
@@ -396,25 +459,31 @@ static void mailmsg_snapshot_gic_routes(void)
  * application owns those scheduling decisions.  The ISR remains only a
  * doorbell/ack path, and queue consumption stays outside IRQ context.
  */
-static void mailmsg_pingpong_test_service(void)
+static uint32_t mailmsg_pingpong_test_service(uint32_t pending_priorities,
+					      uint32_t *last_priority,
+					      uint32_t *reschedule)
 {
 	uint32_t priority;
+	uint32_t messages = 0U;
 
 	if (!mailmsg_endpoint_ready)
-		return;
+		return 0U;
 #ifndef MAILMSG_TEST_SKIP_SESSION_READY
 	if (!mailmsg_session_ready_published)
-		return;
+		return 0U;
 #endif
 
 	for (priority = 0; priority < MAILMSG_PRIORITY_COUNT; priority++) {
 		struct mailmsg_message request;
+		uint32_t handled = 0U;
 		int pop_ret;
 
-		if (priority == MAILMSG_TEST_SKIP_PRIORITY)
+		if (!(pending_priorities & BIT(priority)) ||
+		    priority == MAILMSG_TEST_SKIP_PRIORITY)
 			continue;
+		*last_priority = priority;
 
-		for (;;) {
+		while (handled < MAILMSG_WORKER_DRAIN_QUOTA) {
 			pop_ret = mailmsg_endpoint_receive(
 				&cpu3_endpoint, (enum mailmsg_priority)priority,
 				&request);
@@ -440,9 +509,13 @@ static void mailmsg_pingpong_test_service(void)
 						(void *)mailbox_observation,
 						AMP_CACHE_LINE_SIZE);
 					amp_dsb();
+					messages++;
+					handled++;
 				}
 				break;
 			}
+			messages++;
+			handled++;
 
 			if (priority == MAILMSG_PRIO_CRITICAL &&
 			    request.type == MAILMSG_MSG_STOP_REQUEST) {
@@ -481,6 +554,48 @@ static void mailmsg_pingpong_test_service(void)
 						    request.sequence, 0U);
 			(void)mailmsg_send_pong(priority, &request);
 		}
+
+		if (handled == MAILMSG_WORKER_DRAIN_QUOTA &&
+		    mailmsg_endpoint_has_received(
+			    &cpu3_endpoint,
+			    (enum mailmsg_priority)priority) == 1)
+			*reschedule |= BIT(priority);
+	}
+
+	return messages;
+}
+
+static void mailmsg_worker(void *unused1, void *unused2, void *unused3)
+{
+	ARG_UNUSED(unused1);
+	ARG_UNUSED(unused2);
+	ARG_UNUSED(unused3);
+
+	for (;;) {
+		uint32_t pending;
+		uint32_t messages;
+		uint32_t reschedule = 0U;
+		uint32_t last_priority = MAILMSG_PRIORITY_COUNT;
+
+		k_sem_take(&mailmsg_work_sem, K_FOREVER);
+		mailmsg_worker_wake_count++;
+		pending = atomic_set(&mailmsg_pending_priorities, 0);
+		if (!pending) {
+			mailmsg_worker_empty_wake_count++;
+			mailmsg_publish_worker_observation(0U, last_priority);
+			continue;
+		}
+
+		mailmsg_worker_drain_count++;
+		messages = mailmsg_pingpong_test_service(pending,
+							 &last_priority,
+							 &reschedule);
+		mailmsg_worker_message_count += messages;
+		if (reschedule) {
+			atomic_or(&mailmsg_pending_priorities, reschedule);
+			k_sem_give(&mailmsg_work_sem);
+		}
+		mailmsg_publish_worker_observation(pending, last_priority);
 	}
 }
 
@@ -531,7 +646,12 @@ static void mailmsg_mailbox_a2b_matrix_isr(const void *arg)
 	(void)sys_cache_data_flush_range((void *)mailbox_observation,
 					 AMP_CACHE_LINE_SIZE);
 	amp_dsb();
-	mailbox_irq_seen = true;
+	if ((command & 0xfffffff0U) == AMP_MBOX_PROTOCOL_CMD ||
+	    command == (AMP_MBOX_RAW_TEST_CMD | index)) {
+		atomic_or(&mailmsg_pending_priorities, BIT(channel));
+		atomic_inc(&mailmsg_irq_count);
+		k_sem_give(&mailmsg_work_sem);
+	}
 }
 
 static void mailmsg_send_b2a_ack(uint32_t sequence)
@@ -655,6 +775,12 @@ int main(void)
 			      MAILMSG_ENDPOINT_CPU3) ==
 		MAILMSG_ENDPOINT_OK;
 	mailmsg_reset_tx_full_observation();
+	mailmsg_publish_worker_observation(0U, MAILMSG_PRIORITY_COUNT);
+	k_thread_create(&mailmsg_worker_thread, mailmsg_worker_stack,
+			K_THREAD_STACK_SIZEOF(mailmsg_worker_stack),
+			mailmsg_worker, NULL, NULL, NULL,
+			K_PRIO_COOP(0), 0, K_NO_WAIT);
+	k_thread_name_set(&mailmsg_worker_thread, "mailmsg-worker");
 	mailmsg_enable_a2b_channels();
 	mailmsg_snapshot_gic_routes();
 	irq_enable(RK3588_MBOX_A2B_IRQ_FOR(0)); irq_enable(RK3588_MBOX_A2B_IRQ_FOR(1));
@@ -706,13 +832,6 @@ int main(void)
 #ifndef MAILMSG_TEST_SKIP_SESSION_READY
 		mailmsg_service_session_ready();
 #endif
-
-		/* The normal data-plane contract is queue then doorbell.  Do not poll
-		 * a fresh queue before its first interrupt: it lets the queue-full
-		 * probe hold the consumer deterministically, and keeps this test
-		 * responder aligned with the notification abstraction. */
-		if (mailbox_irq_seen)
-			mailmsg_pingpong_test_service();
 
 		if (++spin == 1000000U) {
 			r1_amp_checkpoint_c(MARK_HEARTBEAT |

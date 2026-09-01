@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# One entry point for MailMsg V1 revision 6 artifact upload and board tests.
+# One entry point for MailMsg V1 revision 7 artifact upload and board tests.
 # Host mode validates and uploads the RAM-only artifacts over SSH.  Remote
 # mode runs exactly one profile because timeout profiles require a fresh
 # U-Boot RAM boot before another profile can be attempted.
@@ -12,7 +12,7 @@ IFS=$'\n\t'
 readonly SCRIPT_NAME=${0##*/}
 readonly DEFAULT_R1_HOST=10.42.0.193
 readonly DEFAULT_R1_USER=root
-readonly DEFAULT_REMOTE_ROOT=/userdata/mailmsg-v1-r6
+readonly DEFAULT_REMOTE_ROOT=/userdata/mailmsg-v1-r7
 
 MODE=host
 PROFILE=
@@ -137,15 +137,15 @@ expected_sha256()
 {
 	case $1 in
 	mailmsg-v1-final.img)
-		printf '%s\n' eade522dbd360d2e42d4d42e39f7ad7340e31adab4b3229e246ea6991b7d2b50 ;;
+		printf '%s\n' 95f453099d363fdf1379130f7585fb2d57043665c48e94f88ac70b433508d61f ;;
 	mailmsg-v1-normal.bin)
-		printf '%s\n' 1b2636f3dfdc9529ebee9059c7f5b3eb5716bbb526db0829ad62a50d77222b83 ;;
+		printf '%s\n' 29dcd57a4f11fc988a1831352b278be91a60548ea5e9c63b68cbb7b1ced4b038 ;;
 	mailmsg-v1-controlled-stop.bin)
-		printf '%s\n' 3876efefc0f5dd221d33fd089ca80b91dbce2187aff9bf4faefa164537b8aae6 ;;
+		printf '%s\n' 42dd4335af68057c1329554e591fc786b958bf877db9befeb9ffbe4c87c0fa31 ;;
 	mailmsg-v1-start-timeout.bin)
-		printf '%s\n' dcc335bbfb65c0fd5fea1dba09ea890bbcdf45933ead6804e02106535b7490b4 ;;
+		printf '%s\n' 95ecb5e5631700ea02806e29cea9e7deb8fcd7b1dd84fb827bf3480ba7320e38 ;;
 	mailmsg-v1-stop-timeout.bin)
-		printf '%s\n' 6f3c9c741da63860683a6cf9790dbcec3c224dd5ec4b51f490b66399b15b312e ;;
+		printf '%s\n' fb8e4dbb7b772315223d9dcdd8d4ee96617d12aacd68ae56ecd6ce4b09656f01 ;;
 	mailmsg-user-client-aarch64)
 		printf '%s\n' c85c829789c15445f665e9ccdbf02ccc9ce30cf0fdc0b499514e50d2c1d0ae55 ;;
 	mailmsg-exclusive-reader-test-aarch64)
@@ -191,9 +191,9 @@ host_main()
 
 	script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 	repo_root=$(cd -- "$script_dir/.." && pwd)
-	artifact_dir=$repo_root/build/local/mailmsg-v1-final
+	artifact_dir=$repo_root/build/local/mailmsg-v1-final-r7
 
-	note "checking local MailMsg V1 revision 6 artifacts"
+	note "checking local MailMsg V1 revision 7 artifacts"
 	for name in "${ARTIFACT_NAMES[@]}"; do
 		local_path=$artifact_dir/$name
 		[[ -f $local_path ]] || { fail "missing artifact: $local_path"; return 1; }
@@ -205,7 +205,7 @@ host_main()
 		return 1
 	}
 	files+=("$artifact_dir/artifact-manifest.txt" "$script_dir/$SCRIPT_NAME")
-	pass "all local artifact hashes match the revision 6 manifest"
+	pass "all local artifact hashes match the revision 7 manifest"
 
 	if ((CHECK_ONLY)); then
 		bash -n "$script_dir/$SCRIPT_NAME"
@@ -340,6 +340,26 @@ mailmsg_state()
 	printf '%s\n' "${status%% *}"
 }
 
+mailmsg_worker_field()
+{
+	local wanted=$1
+	local status worker part
+	local -a fields
+
+	status=$(mailmsg_status)
+	worker=${status#*mailmsg_worker=}
+	[[ $worker != "$status" ]] || remote_fail "status has no mailmsg_worker observation"
+	worker=${worker%% *}
+	IFS=/ read -r -a fields <<<"$worker"
+	for part in "${fields[@]}"; do
+		if [[ ${part%%:*} == "$wanted" ]]; then
+			printf '%s\n' "${part#*:}"
+			return 0
+		fi
+	done
+	remote_fail "mailmsg_worker observation has no $wanted field"
+}
+
 wait_state()
 {
 	local expected=$1
@@ -372,6 +392,8 @@ assert_session_active()
 		remote_fail "session generation did not advance: $SESSION_GENERATION -> $local_generation"
 	SESSION_GENERATION=$local_generation
 	grep -q 'session_result=0' <<<"$status" || remote_fail "SESSION_READY result is not zero"
+	grep -q 'mailmsg_worker=valid:1/' <<<"$status" ||
+		remote_fail "event-driven MailMsg worker observation is invalid"
 	grep -q 'state=on (0)' "$AMP/affinity_state" || remote_fail "CPU3 is not ON"
 	pass "SESSION_READY generation $local_generation and ACTIVE state"
 }
@@ -395,16 +417,18 @@ prepare_unarmed()
 start_image()
 {
 	local image=$1
+	local image_size
 	local status
 
 	prepare_unarmed
 	[[ -f $image ]] || remote_fail "missing Zephyr image: $image"
 	verify_file_hash "$image" || remote_fail "bad Zephyr image hash: $image"
+	image_size=$(stat -c %s "$image")
 	note "loading ${image##*/} into the reserved CPU3 image window"
 	command cat "$image" >"$AMP/image"
 	status=$(mailmsg_status)
-	grep -q 'image=41008/41008' <<<"$status" ||
-		remote_fail "kernel did not accept the complete 41008-byte image"
+	grep -q "image=$image_size/$image_size" <<<"$status" ||
+		remote_fail "kernel did not accept the complete ${image_size}-byte image"
 	printf 'start\n' >"$AMP/start"
 }
 
@@ -528,8 +552,14 @@ run_notify_failure()
 run_queue_full_and_recover()
 {
 	local value index output expected count total depth collected=
+	local before_irq before_wake before_drain before_msg
+	local after_irq after_wake after_drain after_msg pending
 
 	note "p3 seven-slot queue boundary and explicit recovery doorbell"
+	before_irq=$(mailmsg_worker_field irq)
+	before_wake=$(mailmsg_worker_field wake)
+	before_drain=$(mailmsg_worker_field drain)
+	before_msg=$(mailmsg_worker_field msg)
 	for value in 800 801 802 803 804 805 806; do
 		printf '3 %s\n' "$value" >"$AMP/mailmsg_queue_push" ||
 			remote_fail "p3 queue became full before seven usable slots"
@@ -563,6 +593,21 @@ run_queue_full_and_recover()
 			done
 			printf '%s\n' "$collected"
 			assert_all_depths_zero
+			after_irq=$(mailmsg_worker_field irq)
+			after_wake=$(mailmsg_worker_field wake)
+			after_drain=$(mailmsg_worker_field drain)
+			after_msg=$(mailmsg_worker_field msg)
+			pending=$(mailmsg_worker_field pending)
+			((after_irq == before_irq + 1)) ||
+				remote_fail "seven-frame drain used $((after_irq - before_irq)) IRQs"
+			((after_wake == before_wake + 1)) ||
+				remote_fail "seven-frame drain used $((after_wake - before_wake)) wakes"
+			((after_drain == before_drain + 1)) ||
+				remote_fail "seven-frame drain used $((after_drain - before_drain)) drain passes"
+			((after_msg == before_msg + 7)) ||
+				remote_fail "seven-frame drain processed $((after_msg - before_msg)) messages"
+			[[ $pending == 0 || $pending == 0x0 ]] ||
+				remote_fail "worker pending bitmap is not empty: $pending"
 			pass "seven queued p3 frames drained without overwrite"
 			return 0
 		fi
@@ -623,12 +668,14 @@ run_controlled_stop()
 run_controlled_profile()
 {
 	local image=$REMOTE_ROOT/mailmsg-v1-controlled-stop.bin
+	local image_size
+	image_size=$(stat -c %s "$image")
 
 	start_image "$image"
 	assert_session_active
 	# This must precede the first Linux A2B doorbell.  The current Zephyr
-	# test service latches mailbox_irq_seen and polls thereafter, so a
-	# later queue-only fill would be consumed immediately.
+	# Run before the first doorbell so this deterministic queue-only probe is
+	# independent of the event-driven responder.
 	run_queue_full_and_recover
 	run_four_priorities
 	run_exclusive_reader
@@ -641,7 +688,7 @@ run_controlled_profile()
 	note "guarded rearm and second-session regression"
 	printf 'rearm\n' >"$AMP/rearm"
 	[[ $(mailmsg_state) == unarmed ]] || remote_fail "rearm did not return UNARMED"
-	grep -q 'image=0/41008' <<<"$(mailmsg_status)" ||
+	grep -q "image=0/$image_size" <<<"$(mailmsg_status)" ||
 		remote_fail "rearm did not clear image progress"
 	start_image "$image"
 	assert_session_active

@@ -3,7 +3,7 @@ title: "EXP-20260822-001 构建 R1 Linux-Zephyr 共享内存 PING 原型"
 type: experiment
 status: verified
 created: 2026-08-22
-updated: 2026-08-31
+updated: 2026-09-01
 tags: [rk3588, amp, zephyr, shared-memory, cache, psci]
 related:
   - "[[experiment/exp-20260821-003-build-r1-psci-cpu-on-heartbeat]]"
@@ -634,13 +634,25 @@ queue-only 测试因测试顺序假设失效而停止：此前 A2B 操作后，Z
 
 本步骤记录主仓库远端更新、分支跟踪、内核本地 commit/patch、证据附件和只读冻结结果；内核 commit 尚未远程保存，不表示内核已 push 或进入远端仓库。
 
+### 步骤 57：MailMsg R7 事件驱动 worker 与四 profile RAM-only 回归（已验证）
+
+目的与预期结果：验证 Mailbox ISR 通过 pending bitmap、semaphore 唤醒 worker，再由 worker drain 共享内存 ring 的事件驱动路径；完成 R7 的 normal、STOP_REFUSED、controlled STOP、start-timeout 和 stop-timeout RAM-only 功能回归，但不覆盖压力、性能或 RKLLM 共存。
+
+本次事件时间为 2026-09-01，具体时刻未记录。主机侧四项构建成功；DTS 固定槽容量由 `41008` 扩为 `49152`，四个 Zephyr bin 尾部补零至 `49152`；resource 回读确认 DTB/logo 一致，外置数据 FIT 可经 RAM 启动。板端 Linux 为 `5.10.252`、`nproc=7`；初始 status 为 `image=0/49152`，加载 normal 固件并完成 `SESSION_READY` 后为 `image=49152/49152`、session `1/1`、state `active`、CPU3 `on`、worker `valid`。
+
+normal 数据面中，单个 p0 消息 `41` 返回 ACK 与 PONG `42`，worker 计数为 `irq/wake/drain/msg=1`；随后 p0..p3 各一帧得到业务值 `101/201/301/401`，累计 `msg=5`、pending 为 `0`。queue-only 路径向 p3 预填 `800..806` 共 7 帧，显示 `depth=7`；一次 raw ch3 doorbell 后收到 PONG `801..807`，worker 的 `irq/wake/drain` 仅增加 1、`msg` 增加 7，pending 为 `0`。之后额外读取得到 `empty`，这是用户态多读造成的空队列观察，不是漏帧证据。
+
+normal STOP_REFUSED 流程中，STOP 后 `stop_reply=7`、`stop_result=-125`，随后 p0 `500` 返回 ACK/PONG `501`，数据面仍可用。controlled STOP 流程中，p0 `600` 返回 ACK/PONG `601`；带 offline waiter 时 Linux 主动 STOP 因 `user_open_count` 非零返回 `EBUSY`，该行为属于当前前置保护策略，不是 worker 故障。关闭 waiter 后 STOP 成功，得到 `STOP_READY=6/stop_reply=6`、`stop_result=0`、`offline`、CPU3 `off`、`magic=STOP`；rearm 后 `image=0/49152`，第二会话为 `session=2/2`，p0 `700` 返回 ACK/PONG `701`，再次 STOP 成功。
+
+start-timeout 流程进入 `state=start-timeout`、`session_result=-110`，CPU3 为 `on`，客户端返回 `ETIMEDOUT`；stop-timeout 流程先完成 p1 `1300→1301`，随后进入 `state=stop-timeout`、`stop_result=-110`，CPU3 仍为 `on`，客户端返回 `ETIMEDOUT`。上述四 profile 的 RAM-only 功能回归通过；不表示并发/压力、吞吐/延迟、长期稳定性、崩溃恢复、RKLLM 共存或持久化已验证，也不表示 R7 主机冻结/commit 已完成。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
 | --- | --- | --- | --- |
 | 共享内存协议布局 | request/response 各由独立 64 B cache line 承载 | Zephyr 源码静态断言和固定地址布局满足 | 通过（静态） |
 | 双方 cache maintenance | Linux/Zephyr 对交接数据显式维护 cache | Zephyr 端 invalidate/flush 与 `dsb sy` 已构建；Linux 端已编入 ping/response 接口 | 通过（主机静态） |
-| Linux Image、AMP DTB、Zephyr | 可生成且 DTS image-size 与 bin 一致 | 三项构建通过，Zephyr `0x9020` 与 DTS 同步 | 通过（静态） |
+| Linux Image、AMP DTB、Zephyr | 可生成且 DTS image-size 与 bin 一致 | 早期历史版本三项构建通过，Zephyr `0x9020` 与 DTS 同步；R7 步骤 57 使用 `49152`（`0xc000`）固定槽及 padding bin | 通过（静态；尺寸为历史版本） |
 | resource/FIT 封装 | resource 条目、logo、FIT 回读一致且小于 64 MiB | `cmp` 通过，FIT 38,636,544 B | 通过（静态） |
 | RAM 启动与 Linux 侧接口 | 候选进入 Linux，sysfs ping/response 可用 | `nproc=7`、reserved 节点存在，五个接口均存在，image `36896/36896` | 通过（运行时） |
 | PSCI 与 Zephyr 执行 | 一次 `start` 后 CPU3 交接并到达 EL1 | `cpu_on_ret=0`、`magic=0x48420001`、`current_el=4` | 通过（运行时） |
@@ -701,6 +713,7 @@ queue-only 测试因测试顺序假设失效而停止：此前 A2B 操作后，Z
 | R6 stop-timeout fresh RAM 回归 | CPU3 已完成 `SESSION_READY` 后 STOP 进入终态超时，stop 结果及 p1 数据面返回超时错误 | 初始 `unarmed`、session `0/0`、CPU3 `off`；加载专用固件后 `SESSION_READY generation=1`、`active session=1/1`；p1 ACK+PONG `1301`；STOP 后 `mailmsg_state=stop-timeout`、`stop_result=-110`、`stop_reply=0`、`stop_notify=0`、affinity `on`；`/dev/mailmsg-p1` 返回 `Connection timed out`，profile 报告 `PASS`；报告 `build/local/mailmsg-v1-final/reports/stop-timeout-20231122-050100.log`，SHA-256 `be083f02c83549d7a1c87ec5eff65c0eea69b5e9009cfd4d2839e0974152b53c`，2245 字节 | 通过（stop-timeout；测试后需 fresh RAM boot；LLM 仍待测） |
 | R6 与 RKLLM 共存 fresh RAM 回归 | 普通 MailMsg session active 时 RKLLM 初始化/生成成功，推理期间 p2 与推理后 p0 仍可完成回环，统计无错误 | Linux `5.10.252`、7 核；普通 bin `active session=1/1`；Runtime `1.3.0`、RKNPU `0.9.8`、Enabled CPUs `[3,4,5,6]`/4，`ok`→`Alright,`、exit `0`；p0 `41→ACK+PONG 42`、推理期间 p2 PING/PONG `1501..1516`、p0 `1401→1402` 及 `1499→1500`；终态 `active/session=1/1`、CPU3 `on`、`a2b_now=0`，p0 `tx=3/depth=0/rx=7/errors=0`，p2 `tx=16/rx=16/depth=0/errors=0`；报告 `build/local/mailmsg-v1-final/reports/llm-coexistence-20260831.log`，SHA-256 `f1f67016e039c91f4673fa4f2289edb7363fa92a2776de152fa55c45f792e1ba`，2200 字节 | 通过（R6 本轮定义的 RAM-only 验证范围；不覆盖产品化、持久化及并发压力等边界） |
 | R6 里程碑冻结与长期证据附件 | 保存源码身份、五份脱敏报告及其来源/校验关系，不提交大型产物 | 主仓库本地 commit `cdeb93dc3361fd30047cef9d88cd6e35297fd4d1` 已以精确 `force-with-lease` 更新远端 GitHub `origin/main` 至 `6fdcff9bcfa41113d5f1384332fc34f91a488caf`；本地主分支为 `main` 并跟踪 `origin/main`，旧本地 main 为 `main-pre-r6-backup`；内核仓库本地 commit `dcb7dfd7b5f734c8d817920129ca4b794d219c9b` 及 format-patch 仍未远程保存；冻结目录 `build/local/releases/mailmsg-v1-r6-20260831/` 约 77M，manifest/SHA256SUMS 已生成，18 个 artifact/report/patch 校验通过并已只读；五份报告已复制至 `doc/_assets/mailmsg-r6/` | 通过（主仓库发布完成；内核仅本地保存，不提交大型产物） |
+| MailMsg 事件驱动 worker 与四 profile 回归 | ISR→pending bitmap→semaphore→worker 事件驱动链路工作；normal、STOP_REFUSED、controlled STOP、start-timeout、stop-timeout 的 RAM-only 功能路径可回归 | 主机四项构建成功；DTS 槽为 `49152`、四个 bin 尾部补零，resource 回读 DTB/logo 一致并完成外置 FIT RAM 启动；Linux `5.10.252`、7 核，normal 后 `image=49152/49152`、session `1/1`、active、CPU3 on、worker valid；p0 `41→ACK+PONG 42`，四 priority 得 `101/201/301/401`；p3 `800..806` depth7，raw ch3 doorbell 后 PONG `801..807`，worker `irq/wake/drain` +1、`msg` +7、pending 清零；STOP_REFUSED `-125` 后 p0 `500→501`；controlled STOP 在关闭 offline waiter 后 `STOP_READY=6/stop_reply=6/result=0/offline/CPU3 off`，rearm 后 session `2/2`、p0 `700→701` 再 STOP 成功；start/stop-timeout 均 `-110` 且数据面 `ETIMEDOUT` | 通过（四 profile RAM-only 功能回归；不覆盖压力/性能、RKLLM 共存或持久化） |
 
 ## 结论
 
@@ -756,4 +769,4 @@ queue-only 测试因测试顺序假设失效而停止：此前 A2B 操作后，Z
 
 补充结论（2026-08-28，RAM-only 硬件验证）：在最终 FIT SHA-256 `f8709830d4411b620f02a1a2d29ec3f08d9f709c61cb22b18e27d93067fd3083` 上 CPU3 已启动。板端状态为 `m0c0=rx:1/0xb2a10000/0x0,tx:1/-16,notify:1/1/1/0`、`a2b_now=m0:0`、`mailmsg_notify=1`；最后通知结果为 `COALESCED`，发送计数 1、合并计数 1、失败计数 0，`-16` 是内核 `EBUSY` 作为观察到的门铃 pending 原因，不是消息入队失败。p0 两次连续请求分别返回 ACK `seq1 peer1 status0`、PONG `seq2 value101`，以及 ACK `seq3 peer2 status0`、PONG `seq4 value201`。该结果限于 mailbox0 ch0：第二条消息合并到既有 A2B pending 门铃且未占 Linux core TX 队列；不等价于高并发或压力测试。
 
-- [ ] 结束当前 stop-timeout RAM 会话，执行 fresh U-Boot RAM boot 后验证 LLM 回归；四个 R6 profiles 均已验证，但 R6 整体仍未完成，不写入 eMMC。
+- [ ] 完成 R7 最终父仓库提交/推送与冻结；事件驱动 worker 的 normal、多优先级、7 帧单次唤醒及四 profile RAM-only 功能回归已验证，但不覆盖压力、性能、RKLLM 共存或持久化，不写入 eMMC。
