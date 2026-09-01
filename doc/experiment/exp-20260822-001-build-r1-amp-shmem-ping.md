@@ -662,6 +662,22 @@ RKLLM 进程运行期间 p2 16 次 PING/PONG 的值 `1501..1516` 全部成功；
 
 板端完整报告已按原字节拉回 [llm-coexistence.log](../_assets/mailmsg-r7/llm-coexistence.log)，SHA-256 为 `00daf4738df379324c7620a38ea363163e2dd41be217864e27b483ce5f060111`，大小 `5743 B`；独立 LLM 输出已拉回 [llm-output.log](../_assets/mailmsg-r7/llm-output.log)，SHA-256 为 `6520f7d8a2f6f830f1f507cbf5b3d3fb33a230c08b947cb93a91a5b498321124`，大小 `2181 B`。报告无凭据；附件来源为板端完整报告及其独立输出的原字节回收。该结果仅支持一次 RAM-only 短时功能共存，不表示压力、吞吐/延迟隔离、长期稳定或持久化已验证；normal CPU3 按设计仍保持 on。
 
+### 步骤 60：R7 RKLLM llm-soak 单生产者 RAM-only 回归（已验证）
+
+目的与预期结果：在 R7 normal session active 时，以真实 RKLLM Generate 负载进行约 3 分钟的单生产者功能 soak；确认 24 轮 Generate、四 priority 请求和结束后的 MailMsg 回环均完成，并记录本轮观察到的队列、worker 与错误统计。该步骤不把观测到的耗时、速率或内存数值解释为性能承诺，也不覆盖并发 writers、长期稳定性或持久化。
+
+本次事件时间为 2026-09-01，主机侧约 15:52–15:55；板端报告文件名含 `20231122-050008`，来自错误 RTC，不作为事件时间。使用 fresh R7 normal RAM-only 会话，normal 后为 `active`、session `1/1`、CPU3 `on`。24 轮真实 Generate 全部完成，`robot=24`、RKLLM exit `0`；总 Generate `168089.61 ms`，平均 `7003.73 ms`，最小 `6791.00 ms`、最大 `7363.52 ms`，共 `1535` tokens。这些是本轮输出观察，不构成性能、吞吐或时延上界结论。
+
+模型运行期间由单串行 producer 轮询 p0–p3，共 `635` 个请求，分布为 p0/p1/p2/p3 `159/159/159/158`。记录到的每 priority 延迟为 min/avg/max（ms）：p0 `3.615/5.977/9.539`、p1 `2.908/6.133/16.110`、p2 `4.213/5.950/16.890`、p3 `3.910/6.003/14.387`；延迟包含用户程序启动、sysfs/字符设备路径和协议往返，不是纯协议延迟。最终 post 四 priority 回归通过；状态为 active、session `1/1`、CPU3 `on`、`a2b=0`、pending `0`、所有 priority depth `0`，full/incomplete/crc/invalid/stale 均 `0`。worker 统计为 `commit=640`、`irq=639`、`wake=639`、`drain=639`、`msg=639`。前后可用内存均约 `3.6 GiB`，无 swap；日志扫描未发现已知 RKLLM 失败或 OOM 字符串。
+
+证据来自本机目录 `build/local/mailmsg-v1-r7-postfreeze/reports/`。主会话在 Arch 主机的仓库根目录 `/home/loser/Study/rk3588` 执行 `scripts/mailmsg-v1-test.sh --profile llm-soak`，脚本再通过 SSH 运行板端 profile；板端报告原始文件名为 `llm-soak-20231122-050008.log`，RKLLM 输出为 `llm-soak-20231122-050008-rkllm.log`，流量 CSV 为 `llm-soak-20231122-050008-traffic.csv`。三份文件均保持原字节复制到 `doc/_assets/mailmsg-r7/`：
+
+- [llm-soak.log](../_assets/mailmsg-r7/llm-soak.log)：`4472 B`，SHA-256 `918b367795e2fdc2d45c4b64a1b09fe19d2f012064d27e33280f7dda1affe9f1`。
+- [llm-soak-rkllm.log](../_assets/mailmsg-r7/llm-soak-rkllm.log)：`28056 B`，SHA-256 `a530dbd88b1d7c37f09342adf4936a90a26f8376c7802198d2f7385f8f805b98`。
+- [llm-soak-traffic.csv](../_assets/mailmsg-r7/llm-soak-traffic.csv)：`11996 B`，SHA-256 `e8b5d2c9ab9ffa5e1c51170d52a4c519895c2e575d21a13b88714eb0834029ed`。
+
+结论：本轮约 3 分钟、24 轮、单生产者的 RAM-only 功能 soak 通过，且运行期间四 priority 请求均有记录、最终队列和错误统计归零；这不证明长期稳定性、并发 writers、吞吐/实时上界或持久化。唯一后续应在真实任务负载定义后，再选择更长时段、并发或 priority 压力验证。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -732,6 +748,7 @@ RKLLM 进程运行期间 p2 16 次 PING/PONG 的值 `1501..1516` 全部成功；
 | MailMsg 事件驱动 worker 与四 profile 回归 | ISR→pending bitmap→semaphore→worker 事件驱动链路工作；normal、STOP_REFUSED、controlled STOP、start-timeout、stop-timeout 的 RAM-only 功能路径可回归 | 主机四项构建成功；DTS 槽为 `49152`、四个 bin 尾部补零，resource 回读 DTB/logo 一致并完成外置 FIT RAM 启动；Linux `5.10.252`、7 核，normal 后 `image=49152/49152`、session `1/1`、active、CPU3 on、worker valid；p0 `41→ACK+PONG 42`，四 priority 得 `101/201/301/401`；p3 `800..806` depth7，raw ch3 doorbell 后 PONG `801..807`，worker `irq/wake/drain` +1、`msg` +7、pending 清零；STOP_REFUSED `-125` 后 p0 `500→501`；controlled STOP 在关闭 offline waiter 后 `STOP_READY=6/stop_reply=6/result=0/offline/CPU3 off`，rearm 后 session `2/2`、p0 `700→701` 再 STOP 成功；start/stop-timeout 均 `-110` 且数据面 `ETIMEDOUT` | 通过（四 profile RAM-only 功能回归；不覆盖压力/性能、RKLLM 共存或持久化） |
 | R7 主机提交身份与冻结材料 | 记录源码/内核身份及冻结目录校验，远端发布状态保持准确 | 主仓库/现有文档 commit `c4267d9`；嵌套内核 commit `3944bf4a7`，format-patch SHA-256 `bfe13e0abdff5ef5699e64ad513b7a2b985a2feb8be851acdf4c9e5b773d669c`；`build/local/mailmsg-v1-final-r7/` 的 `SHA256SUMS` 16 个文件全部校验通过并已只读；freeze-manifest SHA-256 `5395da9deb86ef0fd912b76fa8080ef13dcc91faa3c102dc3a120158cfa8faae`，SHA256SUMS SHA-256 `6bb781830a94e8148eb37bd88da8ce77df1e7bd0092e7251a9117ffb7c244c54`；目录无四 profile 独立原始串口日志，验证事实见步骤 57 摘要；提交 `c4267d9` 与 `087d4ef` 已正常推送至 `origin/main` | 通过（本机材料已核对；R7 主仓库已发布） |
 | R7 RKLLM 共存短时功能回归 | normal session active 时，RKLLM 进程运行期间 p2、结束后 p0 仍完成回环且统计无错误 | fresh R7 FIT；p0 `41→ACK+PONG 42`；Runtime `1.3.0`、RKNPU `0.9.8`、CPU `[3,4,5,6]`/4，生成 63 tokens、`8.34 tok/s`；p2 `1501..1516` 全成功，p0 `1499→ACK+PONG 1500`；终态 worker valid、`commit=19/irq=18/wake=18/drain=18/msg=18/pending=0`、p0/p2 depth0、错误计数全0；报告附件见步骤 59 | 通过（一次短时 RAM-only 功能共存；不覆盖压力/性能/长期稳定/持久化） |
+| R7 RKLLM llm-soak 单生产者回归 | 约 3 分钟、24 轮真实 Generate 全完成；单串行 producer 轮询 p0–p3，终态四 priority depth/错误归零 | `robot=24`、RKLLM exit `0`，总 Generate `168089.61 ms`、共 `1535` tokens；p0/p1/p2/p3 请求 `159/159/159/158` 共 `635`，最终 active/session `1/1`、CPU3 on、a2b/pending `0`、worker `commit=640/irq=639/wake=639/drain=639/msg=639`、full/incomplete/crc/invalid/stale 全 `0`；三份原始附件及完整 SHA 见步骤 60 | 通过（一次约 3 分钟 RAM-only 单生产者功能 soak；不覆盖长期/并发/性能上界/持久化） |
 
 ## 结论
 
@@ -787,4 +804,4 @@ RKLLM 进程运行期间 p2 16 次 PING/PONG 的值 `1501..1516` 全部成功；
 
 补充结论（2026-08-28，RAM-only 硬件验证）：在最终 FIT SHA-256 `f8709830d4411b620f02a1a2d29ec3f08d9f709c61cb22b18e27d93067fd3083` 上 CPU3 已启动。板端状态为 `m0c0=rx:1/0xb2a10000/0x0,tx:1/-16,notify:1/1/1/0`、`a2b_now=m0:0`、`mailmsg_notify=1`；最后通知结果为 `COALESCED`，发送计数 1、合并计数 1、失败计数 0，`-16` 是内核 `EBUSY` 作为观察到的门铃 pending 原因，不是消息入队失败。p0 两次连续请求分别返回 ACK `seq1 peer1 status0`、PONG `seq2 value101`，以及 ACK `seq3 peer2 status0`、PONG `seq4 value201`。该结果限于 mailbox0 ch0：第二条消息合并到既有 A2B pending 门铃且未占 Linux core TX 队列；不等价于高并发或压力测试。
 
-- [ ] 在 R7 已推送、冻结材料已只读校验的基础上，选择一项并发压力、长期稳定性、吞吐/延迟、大数据、崩溃恢复或 suspend 的 RAM-only 验证；现有四 profile 与一次 RKLLM 共存仅为功能证据，不覆盖上述边界或持久化，不写入 eMMC。
+- [ ] 在真实任务负载定义后，选择更长时段、并发或 priority 压力的 RAM-only 验证；本次四 profile、一次 RKLLM 共存与约 3 分钟单生产者 soak 仅为功能证据，不覆盖长期稳定、吞吐/实时上界、并发 writers 或持久化，不写入 eMMC。

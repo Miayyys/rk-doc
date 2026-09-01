@@ -40,6 +40,7 @@ Profiles (one fresh RAM boot per terminal profile):
   stop-timeout   STOP request is deliberately not consumed; ends terminal.
   start-timeout  SESSION_READY is deliberately withheld; ends terminal.
   llm-coexistence  Normal image plus RKLLM generation and concurrent p2 traffic.
+  llm-soak       24 RKLLM generations plus sustained round-robin p0-p3 traffic.
 
 Host environment overrides: R1_HOST, R1_USER, R1_IDENTITY,
 MAILMSG_REMOTE_ROOT, RKLLM_DEMO_ROOT.  Uploads only to /userdata; never writes
@@ -122,7 +123,7 @@ while (($#)); do
 done
 
 case ${PROFILE:-none} in
-	none|controlled|stop-refused|stop-timeout|start-timeout|llm-coexistence) ;;
+	none|controlled|stop-refused|stop-timeout|start-timeout|llm-coexistence|llm-soak) ;;
 	*) fail "unknown profile: $PROFILE"; exit 2 ;;
 esac
 
@@ -890,6 +891,162 @@ run_llm_coexistence_profile()
 	pass "RKLLM generation coexisted with 16 p2 requests and post-run p0"
 }
 
+run_llm_soak_profile()
+{
+	local image=$REMOTE_ROOT/mailmsg-v1-normal.bin
+	local llm_bin=$LLM_ROOT/llm_demo-amp
+	local model=$LLM_ROOT/models/DeepSeek-R1-Distill-Qwen-1.5B_W8A8_RK3588.rkllm
+	local llm_log=${REPORT%.log}-rkllm.log
+	local traffic_log=${REPORT%.log}-traffic.csv
+	local rounds=24 timeout_seconds=300 traffic_seconds=270
+	local llm_pid llm_rc=0 index priority value output
+	local start_ns end_ns latency_ns traffic_start total=0
+	local generate_count robot_count before_msg after_msg expected_msg
+	local before_errors after_errors pending
+	local -a success=(0 0 0 0)
+
+	[[ -x $llm_bin ]] || remote_fail "RKLLM demo is not executable: $llm_bin"
+	[[ -r $model ]] || remote_fail "RKLLM model is not readable: $model"
+	[[ -d $LLM_ROOT/lib ]] || remote_fail "RKLLM library directory is absent"
+	command -v timeout >/dev/null || remote_fail "timeout is required"
+	command -v stdbuf >/dev/null || remote_fail "stdbuf is required"
+	command -v date >/dev/null || remote_fail "date is required"
+	free -h
+	df -h "$LLM_ROOT" "$REMOTE_ROOT"
+
+	start_image "$image"
+	assert_session_active
+	assert_all_depths_zero
+	before_msg=$(mailmsg_worker_field msg)
+	before_errors=$(stats_error_total)
+	printf 'priority,request,value,latency_ns\n' >"$traffic_log"
+
+	note "starting $rounds sequential RKLLM generations and sustained p0-p3 traffic"
+	(
+		for ((index = 0; index < rounds; index++)); do
+			printf '0\n'
+		done
+		printf 'exit\n'
+	) | timeout "$timeout_seconds" stdbuf -oL -eL env \
+		LD_LIBRARY_PATH="$LLM_ROOT/lib" RKLLM_LOG_LEVEL=1 \
+		"$llm_bin" "$model" 64 512 >"$llm_log" 2>&1 &
+	llm_pid=$!
+	trap "kill $llm_pid 2>/dev/null || true" EXIT
+
+	for ((index = 0; index < 600; index++)); do
+		grep -q 'rkllm init success' "$llm_log" && break
+		kill -0 "$llm_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	grep -q 'rkllm init success' "$llm_log" || {
+		set +e
+		wait "$llm_pid"
+		llm_rc=$?
+		set -e
+		trap - EXIT
+		cat "$llm_log"
+		remote_fail "RKLLM did not reach init success, exit=$llm_rc"
+	}
+
+	traffic_start=$SECONDS
+	while kill -0 "$llm_pid" 2>/dev/null &&
+	      ((SECONDS - traffic_start < traffic_seconds)); do
+		priority=$((total % 4))
+		value=$((2000 + total))
+		start_ns=$(date +%s%N)
+		if ! output=$("$CLIENT" "$priority" "$value" 2>&1); then
+			printf '%s\n' "$output" >&2
+			remote_fail "soak traffic request $total on p$priority failed"
+		fi
+		end_ns=$(date +%s%N)
+		latency_ns=$((end_ns - start_ns))
+		grep -q "value=$((value + 1))" <<<"$output" ||
+			remote_fail "soak traffic request $total returned a wrong value"
+		if ((priority <= 1)); then
+			grep -Eq 'type=3 .*status=0' <<<"$output" ||
+				remote_fail "reliable p$priority request $total returned no ACK"
+		fi
+		printf '%d,%d,%d,%d\n' "$priority" "$total" "$value" "$latency_ns" \
+			>>"$traffic_log"
+		((success[priority] += 1))
+		((total += 1))
+		if ((total % 100 == 0)); then
+			printf 'traffic_progress=%d elapsed=%ds\n' \
+				"$total" "$((SECONDS - traffic_start))"
+		fi
+		sleep 0.25
+	done
+
+	set +e
+	wait "$llm_pid"
+	llm_rc=$?
+	set -e
+	trap - EXIT
+	((llm_rc == 0)) || {
+		cat "$llm_log"
+		remote_fail "RKLLM soak exited with status $llm_rc"
+	}
+	grep -Fq 'rkllm-runtime version: 1.3.0, rknpu driver version: 0.9.8' \
+		"$llm_log" || remote_fail "unexpected RKLLM/RKNPU version"
+	grep -Fq 'Enabled cpus: [3, 4, 5, 6]' "$llm_log" ||
+		remote_fail "RKLLM did not use the expected Linux CPU mask"
+	grep -Fq 'Enabled cpus num: 4' "$llm_log" ||
+		remote_fail "RKLLM enabled CPU count is not four"
+	if grep -Eq 'matmul\(w8a8\) run failed|rkllm init failed|Mismatch between enabled CPUs' \
+		"$llm_log"; then
+		remote_fail "RKLLM soak log contains a known failure"
+	fi
+	generate_count=$(grep -Ec '^I rkllm:  Generate[[:space:]]' "$llm_log" || true)
+	robot_count=$(grep -c 'robot:' "$llm_log" || true)
+	((generate_count == rounds)) || remote_fail \
+		"completed $generate_count RKLLM generations; expected $rounds"
+	((robot_count >= rounds)) || remote_fail \
+		"observed $robot_count robot prompts; expected at least $rounds"
+	for priority in 0 1 2 3; do
+		((success[priority] > 0)) || remote_fail \
+			"priority $priority completed no request during RKLLM"
+	done
+
+	note "post-soak four-priority regression"
+	run_four_priorities
+	after_msg=$(mailmsg_worker_field msg)
+	after_errors=$(stats_error_total)
+	pending=$(mailmsg_worker_field pending)
+	expected_msg=$((before_msg + total + 4))
+	((after_msg == expected_msg)) || remote_fail \
+		"worker msg=$after_msg, expected $expected_msg from $total soak plus four post checks"
+	((after_errors == before_errors)) || remote_fail \
+		"MailMsg error counters changed: $before_errors -> $after_errors"
+	[[ $pending == 0 || $pending == 0x0 ]] ||
+		remote_fail "worker pending bitmap is not empty: $pending"
+	[[ $(mailmsg_state) == active ]] || remote_fail "MailMsg session is no longer active"
+	grep -q 'state=on (0)' "$AMP/affinity_state" || remote_fail "CPU3 is no longer ON"
+	grep -Eq 'a2b_now=m0:0x0( |$)' <<<"$(mailmsg_status)" ||
+		remote_fail "an A2B doorbell remains pending"
+	assert_all_depths_zero
+
+	printf 'rkllm_generations=%d traffic_total=%d p0=%d p1=%d p2=%d p3=%d\n' \
+		"$generate_count" "$total" "${success[0]}" "${success[1]}" \
+		"${success[2]}" "${success[3]}"
+	awk -F, '
+		NR > 1 {
+			count[$1]++
+			sum[$1] += $4
+			if (!(($1) in min) || $4 < min[$1]) min[$1] = $4
+			if ($4 > max[$1]) max[$1] = $4
+		}
+		END {
+			for (p = 0; p < 4; p++)
+				printf "p%d latency_ms count=%d min=%.3f avg=%.3f max=%.3f\n",
+				       p, count[p], min[p] / 1000000,
+				       sum[p] / count[p] / 1000000, max[p] / 1000000
+		}
+	' "$traffic_log"
+	free -h
+	remote_snapshot
+	pass "$rounds RKLLM generations coexisted with $total round-robin MailMsg requests"
+}
+
 remote_main()
 {
 	local name path timestamp
@@ -939,6 +1096,7 @@ remote_main()
 	start-timeout) run_start_timeout_profile ;;
 	stop-timeout) run_stop_timeout_profile ;;
 	llm-coexistence) run_llm_coexistence_profile ;;
+	llm-soak) run_llm_soak_profile ;;
 	esac
 
 	note "profile result: PASS"
