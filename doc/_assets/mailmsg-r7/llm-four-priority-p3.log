@@ -1,0 +1,2 @@
+priority=3 window=1 duration_s=8 attempts=106192 write_ok=106192 enospc=0 eagain=0 write_other=0 pong=106192 ack=0 nack=0 duplicate=0 unknown=0 timeout=0 lost=0 max_inflight=1 throughput_rps=13274.000
+latency_us count=106192 min=3.208 p50=35.581 p95=107.911 p99=347.940 max=10429.440

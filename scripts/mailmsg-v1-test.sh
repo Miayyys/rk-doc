@@ -41,6 +41,8 @@ Profiles (one fresh RAM boot per terminal profile):
   start-timeout  SESSION_READY is deliberately withheld; ends terminal.
   llm-coexistence  Normal image plus RKLLM generation and concurrent p2 traffic.
   llm-soak       24 RKLLM generations plus sustained round-robin p0-p3 traffic.
+  llm-p2-window  RKLLM generation plus stepped p2 in-flight windows 1..32.
+  llm-four-priority  RKLLM generation plus simultaneous p0-p3 window=1 traffic.
 
 Host environment overrides: R1_HOST, R1_USER, R1_IDENTITY,
 MAILMSG_REMOTE_ROOT, RKLLM_DEMO_ROOT.  Uploads only to /userdata; never writes
@@ -123,7 +125,7 @@ while (($#)); do
 done
 
 case ${PROFILE:-none} in
-	none|controlled|stop-refused|stop-timeout|start-timeout|llm-coexistence|llm-soak) ;;
+	none|controlled|stop-refused|stop-timeout|start-timeout|llm-coexistence|llm-soak|llm-p2-window|llm-four-priority) ;;
 	*) fail "unknown profile: $PROFILE"; exit 2 ;;
 esac
 
@@ -202,13 +204,26 @@ verify_file_hash()
 
 host_main()
 {
-	local script_dir repo_root artifact_dir target remote_cmd
+	local script_dir repo_root artifact_dir tool_dir bench_source bench_binary
+	local target remote_cmd
 	local name local_path remote_hash expected local_hash
 	local -a files ssh_opts
 
 	script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 	repo_root=$(cd -- "$script_dir/.." && pwd)
 	artifact_dir=$repo_root/build/local/mailmsg-v1-final-r7
+	tool_dir=$repo_root/build/local/mailmsg-v1-tools
+	bench_source=$repo_root/tests/mailmsg_window_bench.c
+	bench_binary=$tool_dir/mailmsg-window-bench-aarch64
+
+	command -v aarch64-linux-gnu-gcc >/dev/null || {
+		fail "aarch64-linux-gnu-gcc is required"
+		return 1
+	}
+	[[ -f $bench_source ]] || { fail "missing benchmark source: $bench_source"; return 1; }
+	mkdir -p -- "$tool_dir"
+	aarch64-linux-gnu-gcc -std=c11 -O2 -Wall -Wextra -Werror -static \
+		"$bench_source" -o "$bench_binary"
 
 	note "checking local MailMsg V1 revision 7 artifacts"
 	for name in "${ARTIFACT_NAMES[@]}"; do
@@ -221,7 +236,8 @@ host_main()
 		fail "missing artifact manifest"
 		return 1
 	}
-	files+=("$artifact_dir/artifact-manifest.txt" "$script_dir/$SCRIPT_NAME")
+	files+=("$artifact_dir/artifact-manifest.txt" "$script_dir/$SCRIPT_NAME" \
+		"$bench_binary")
 	pass "all local artifact hashes match the revision 7 manifest"
 
 	if ((CHECK_ONLY)); then
@@ -253,11 +269,12 @@ host_main()
 	ssh "${ssh_opts[@]}" "$target" "$remote_cmd"
 	scp "${ssh_opts[@]}" -- "${files[@]}" "$target:$REMOTE_ROOT/"
 
-	printf -v remote_cmd 'chmod 0755 -- %q %q %q %q' \
+	printf -v remote_cmd 'chmod 0755 -- %q %q %q %q %q' \
 		"$REMOTE_ROOT/$SCRIPT_NAME" \
 		"$REMOTE_ROOT/mailmsg-user-client-aarch64" \
 		"$REMOTE_ROOT/mailmsg-exclusive-reader-test-aarch64" \
-		"$REMOTE_ROOT/mailmsg-offline-wait-test-aarch64"
+		"$REMOTE_ROOT/mailmsg-offline-wait-test-aarch64" \
+		"$REMOTE_ROOT/mailmsg-window-bench-aarch64"
 	ssh "${ssh_opts[@]}" "$target" "$remote_cmd"
 
 	note "verifying every transferred artifact on R1"
@@ -272,7 +289,8 @@ host_main()
 		}
 		printf 'verified: %s\n' "$name"
 	done
-	for local_path in "$artifact_dir/artifact-manifest.txt" "$script_dir/$SCRIPT_NAME"; do
+	for local_path in "$artifact_dir/artifact-manifest.txt" "$script_dir/$SCRIPT_NAME" \
+		"$bench_binary"; do
 		name=${local_path##*/}
 		local_hash=$(sha256sum "$local_path")
 		local_hash=${local_hash%% *}
@@ -305,7 +323,23 @@ AMP=
 REPORT=
 CLIENT=
 EXCLUSIVE_TEST=
+WINDOW_BENCH=
 SESSION_GENERATION=0
+FOUR_PRIORITY_LLM_PID=
+FOUR_PRIORITY_BENCH_PIDS=()
+
+cleanup_four_priority_jobs()
+{
+	local pid
+
+	if [[ ${FOUR_PRIORITY_LLM_PID:-} =~ ^[0-9]+$ ]]; then
+		kill "$FOUR_PRIORITY_LLM_PID" 2>/dev/null || true
+	fi
+	for pid in "${FOUR_PRIORITY_BENCH_PIDS[@]:-}"; do
+		[[ $pid =~ ^[0-9]+$ ]] || continue
+		kill "$pid" 2>/dev/null || true
+	done
+}
 
 remote_snapshot()
 {
@@ -376,6 +410,27 @@ mailmsg_worker_field()
 		fi
 	done
 	remote_fail "mailmsg_worker observation has no $wanted field"
+}
+
+mailmsg_tx_full_field()
+{
+	local wanted=$1
+	local status observation part
+	local -a fields
+
+	status=$(mailmsg_status)
+	observation=${status#*mailmsg_tx_full=}
+	[[ $observation != "$status" ]] ||
+		remote_fail "status has no mailmsg_tx_full observation"
+	observation=${observation%% *}
+	IFS=/ read -r -a fields <<<"$observation"
+	for part in "${fields[@]}"; do
+		if [[ ${part%%:*} == "$wanted" ]]; then
+			printf '%s\n' "${part#*:}"
+			return 0
+		fi
+	done
+	remote_fail "mailmsg_tx_full observation has no $wanted field"
 }
 
 wait_state()
@@ -787,6 +842,53 @@ stats_error_total()
 	' "$AMP/mailmsg_stats"
 }
 
+stats_protocol_error_total()
+{
+	awk '
+		/^p[0-3] / {
+			for (i = 1; i <= NF; i++) {
+				if ($i ~ /^(incomplete|crc|invalid|stale)=/) {
+					split($i, field, "=")
+					total += field[2]
+				}
+			}
+		}
+		END { print total + 0 }
+	' "$AMP/mailmsg_stats"
+}
+
+priority_full_count()
+{
+	local priority=$1
+
+	awk -v wanted="p$priority" '
+		$1 == wanted {
+			for (i = 1; i <= NF; i++)
+				if ($i ~ /^full=/) {
+					split($i, field, "=")
+					print field[2]
+					exit
+				}
+		}
+	' "$AMP/mailmsg_stats"
+}
+
+wait_worker_idle_at()
+{
+	local expected_msg=$1
+	local index msg pending
+
+	for ((index = 0; index < 50; index++)); do
+		msg=$(mailmsg_worker_field msg)
+		pending=$(mailmsg_worker_field pending)
+		if [[ $msg == "$expected_msg" && ($pending == 0 || $pending == 0x0) ]]; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	remote_fail "worker did not settle at msg=$expected_msg pending=0; got msg=$msg pending=$pending"
+}
+
 run_llm_coexistence_profile()
 {
 	local image=$REMOTE_ROOT/mailmsg-v1-normal.bin
@@ -1047,6 +1149,424 @@ run_llm_soak_profile()
 	pass "$rounds RKLLM generations coexisted with $total round-robin MailMsg requests"
 }
 
+benchmark_summary_field()
+{
+	local summary=$1
+	local wanted=$2
+
+	awk -v wanted="$wanted" '
+		{
+			for (i = 1; i <= NF; i++) {
+				split($i, field, "=")
+				if (field[1] == wanted) {
+					print field[2]
+					exit
+				}
+			}
+		}
+	' <<<"$summary"
+}
+
+run_llm_p2_window_profile()
+{
+	local image=$REMOTE_ROOT/mailmsg-v1-normal.bin
+	local llm_bin=$LLM_ROOT/llm_demo-amp
+	local model=$LLM_ROOT/models/DeepSeek-R1-Distill-Qwen-1.5B_W8A8_RK3588.rkllm
+	local llm_log=${REPORT%.log}-rkllm.log
+	local bench_log=${REPORT%.log}-p2-window.log
+	local rounds=24 timeout_seconds=300 duration=8
+	local llm_pid llm_rc=0 index window base output summary
+	local write_count pong_count lost_count enospc_count eagain_count timeout_count max_inflight
+	local total_write=0 total_pong=0 total_lost=0 total_timeout=0 total_enospc=0
+	local generate_count robot_count before_msg after_msg expected_msg
+	local before_protocol_errors after_protocol_errors before_full after_full
+	local before_window_msg after_window_msg reverse_full_before reverse_full_after
+	local reverse_full_delta reverse_full_priority reverse_full_type reverse_full_result
+	local pending
+	local -a windows=(1 2 4 7 8 16 32)
+
+	[[ -x $llm_bin ]] || remote_fail "RKLLM demo is not executable: $llm_bin"
+	[[ -r $model ]] || remote_fail "RKLLM model is not readable: $model"
+	[[ -d $LLM_ROOT/lib ]] || remote_fail "RKLLM library directory is absent"
+	[[ -x $WINDOW_BENCH ]] || remote_fail "window benchmark is not executable"
+	command -v timeout >/dev/null || remote_fail "timeout is required"
+	command -v stdbuf >/dev/null || remote_fail "stdbuf is required"
+	free -h
+	df -h "$LLM_ROOT" "$REMOTE_ROOT"
+
+	start_image "$image"
+	assert_session_active
+	assert_all_depths_zero
+	before_msg=$(mailmsg_worker_field msg)
+	before_protocol_errors=$(stats_protocol_error_total)
+	before_full=$(priority_full_count 2)
+	[[ $before_full =~ ^[0-9]+$ ]] || remote_fail "cannot parse baseline p2 full count"
+	: >"$bench_log"
+
+	note "starting $rounds RKLLM generations and stepped p2 in-flight windows"
+	(
+		for ((index = 0; index < rounds; index++)); do
+			printf '0\n'
+		done
+		printf 'exit\n'
+	) | timeout "$timeout_seconds" stdbuf -oL -eL env \
+		LD_LIBRARY_PATH="$LLM_ROOT/lib" RKLLM_LOG_LEVEL=1 \
+		"$llm_bin" "$model" 64 512 >"$llm_log" 2>&1 &
+	llm_pid=$!
+	trap "kill $llm_pid 2>/dev/null || true" EXIT
+
+	for ((index = 0; index < 600; index++)); do
+		grep -q 'rkllm init success' "$llm_log" && break
+		kill -0 "$llm_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	grep -q 'rkllm init success' "$llm_log" || {
+		set +e
+		wait "$llm_pid"
+		llm_rc=$?
+		set -e
+		trap - EXIT
+		cat "$llm_log"
+		remote_fail "RKLLM did not reach init success, exit=$llm_rc"
+	}
+
+	for index in "${!windows[@]}"; do
+		window=${windows[$index]}
+		base=$((1000000 + index * 200000))
+		before_window_msg=$(mailmsg_worker_field msg)
+		reverse_full_before=$(mailmsg_tx_full_field count)
+		[[ $before_window_msg =~ ^[0-9]+$ && $reverse_full_before =~ ^[0-9]+$ ]] ||
+			remote_fail "cannot parse p2 window baseline observations"
+		kill -0 "$llm_pid" 2>/dev/null ||
+			remote_fail "RKLLM exited before p2 window $window"
+		note "p2 window=$window duration=${duration}s under RKLLM"
+		if ! output=$(timeout "$((duration + 10))" \
+			"$WINDOW_BENCH" 2 "$window" "$duration" "$base" 2>&1); then
+			printf '%s\n' "$output" | tee -a "$bench_log"
+			remote_fail "p2 window $window benchmark failed"
+		fi
+		printf '%s\n' "$output" | tee -a "$bench_log"
+		summary=$(grep -E '^priority=2 ' <<<"$output" | tail -n 1 || true)
+		[[ -n $summary ]] || remote_fail "p2 window $window has no summary"
+		write_count=$(benchmark_summary_field "$summary" write_ok)
+		pong_count=$(benchmark_summary_field "$summary" pong)
+		lost_count=$(benchmark_summary_field "$summary" lost)
+		enospc_count=$(benchmark_summary_field "$summary" enospc)
+		eagain_count=$(benchmark_summary_field "$summary" eagain)
+		timeout_count=$(benchmark_summary_field "$summary" timeout)
+		max_inflight=$(benchmark_summary_field "$summary" max_inflight)
+		[[ $write_count =~ ^[0-9]+$ && $pong_count =~ ^[0-9]+$ &&
+		   $lost_count =~ ^[0-9]+$ &&
+		   $enospc_count =~ ^[0-9]+$ && $eagain_count =~ ^[0-9]+$ &&
+		   $timeout_count =~ ^[0-9]+$ &&
+		   $max_inflight =~ ^[0-9]+$ ]] ||
+			remote_fail "cannot parse p2 window $window summary"
+		((write_count > 0 && pong_count <= write_count &&
+		  lost_count == write_count - pong_count &&
+		  timeout_count == lost_count)) ||
+			remote_fail "p2 window $window has inconsistent response loss accounting"
+		if ((window <= 7)); then
+			((pong_count == write_count && timeout_count == 0)) ||
+				remote_fail "p2 safe window $window lost an accepted request"
+		else
+			printf 'p2_window_boundary=%d accepted=%d pong=%d lost=%d timeout=%d\n' \
+				"$window" "$write_count" "$pong_count" "$lost_count" "$timeout_count"
+		fi
+		((eagain_count == 0)) ||
+			remote_fail "p2 window $window observed unexpected EAGAIN=$eagain_count"
+		((max_inflight <= window)) ||
+			remote_fail "p2 window $window exceeded its configured in-flight bound"
+		wait_worker_idle_at "$((before_window_msg + write_count))"
+		after_window_msg=$(mailmsg_worker_field msg)
+		reverse_full_after=$(mailmsg_tx_full_field count)
+		reverse_full_delta=$((reverse_full_after - reverse_full_before))
+		((after_window_msg == before_window_msg + write_count)) ||
+			remote_fail "p2 window $window worker processed $((after_window_msg - before_window_msg)); expected $write_count"
+		((reverse_full_after >= reverse_full_before)) ||
+			remote_fail "reverse TX-full counter moved backwards at p2 window $window"
+		if ((lost_count)); then
+			reverse_full_priority=$(mailmsg_tx_full_field priority)
+			reverse_full_type=$(mailmsg_tx_full_field type)
+			reverse_full_result=$(mailmsg_tx_full_field result)
+			printf 'p2_window_response_observation=%d lost=%d reverse_full_delta=%d reverse_full_last=priority:%s/type:%s/result:%s\n' \
+				"$window" "$lost_count" "$reverse_full_delta" \
+				"$reverse_full_priority" "$reverse_full_type" "$reverse_full_result"
+		fi
+		((total_write += write_count))
+		((total_pong += pong_count))
+		total_lost=$((total_lost + lost_count))
+		total_timeout=$((total_timeout + timeout_count))
+		total_enospc=$((total_enospc + enospc_count))
+		kill -0 "$llm_pid" 2>/dev/null ||
+			remote_fail "RKLLM exited during p2 window $window"
+	done
+
+	set +e
+	wait "$llm_pid"
+	llm_rc=$?
+	set -e
+	trap - EXIT
+	((llm_rc == 0)) || {
+		cat "$llm_log"
+		remote_fail "RKLLM window test exited with status $llm_rc"
+	}
+	grep -Fq 'rkllm-runtime version: 1.3.0, rknpu driver version: 0.9.8' \
+		"$llm_log" || remote_fail "unexpected RKLLM/RKNPU version"
+	grep -Fq 'Enabled cpus: [3, 4, 5, 6]' "$llm_log" ||
+		remote_fail "RKLLM did not use the expected Linux CPU mask"
+	grep -Fq 'Enabled cpus num: 4' "$llm_log" ||
+		remote_fail "RKLLM enabled CPU count is not four"
+	if grep -Eq 'matmul\(w8a8\) run failed|rkllm init failed|Mismatch between enabled CPUs' \
+		"$llm_log"; then
+		remote_fail "RKLLM window log contains a known failure"
+	fi
+	generate_count=$(grep -Ec '^I rkllm:  Generate[[:space:]]' "$llm_log" || true)
+	robot_count=$(grep -c 'robot:' "$llm_log" || true)
+	((generate_count == rounds)) || remote_fail \
+		"completed $generate_count RKLLM generations; expected $rounds"
+	((robot_count >= rounds)) || remote_fail \
+		"observed $robot_count robot prompts; expected at least $rounds"
+
+	note "post-window four-priority regression"
+	run_four_priorities
+	after_msg=$(mailmsg_worker_field msg)
+	after_protocol_errors=$(stats_protocol_error_total)
+	after_full=$(priority_full_count 2)
+	[[ $after_full =~ ^[0-9]+$ ]] || remote_fail "cannot parse final p2 full count"
+	pending=$(mailmsg_worker_field pending)
+	expected_msg=$((before_msg + total_write + 4))
+	wait_worker_idle_at "$expected_msg"
+	after_msg=$(mailmsg_worker_field msg)
+	pending=$(mailmsg_worker_field pending)
+	((after_msg == expected_msg)) || remote_fail \
+		"worker msg=$after_msg, expected $expected_msg from benchmark plus post checks"
+	((after_protocol_errors == before_protocol_errors)) || remote_fail \
+		"protocol error counters changed: $before_protocol_errors -> $after_protocol_errors"
+	((after_full - before_full == total_enospc)) || remote_fail \
+		"p2 full delta $((after_full - before_full)) != observed ENOSPC $total_enospc"
+	[[ $pending == 0 || $pending == 0x0 ]] ||
+		remote_fail "worker pending bitmap is not empty: $pending"
+	[[ $(mailmsg_state) == active ]] || remote_fail "MailMsg session is no longer active"
+	grep -q 'state=on (0)' "$AMP/affinity_state" || remote_fail "CPU3 is no longer ON"
+	grep -Eq 'a2b_now=m0:0x0( |$)' <<<"$(mailmsg_status)" ||
+		remote_fail "an A2B doorbell remains pending"
+	assert_all_depths_zero
+
+	printf 'rkllm_generations=%d p2_write_ok=%d p2_pong=%d p2_lost=%d p2_timeout=%d p2_enospc=%d\n' \
+		"$generate_count" "$total_write" "$total_pong" "$total_lost" \
+		"$total_timeout" "$total_enospc"
+	free -h
+	remote_snapshot
+	pass "p2 windows 1,2,4,7,8,16,32 completed during RKLLM generation"
+}
+
+run_llm_four_priority_profile()
+{
+	local image=$REMOTE_ROOT/mailmsg-v1-normal.bin
+	local llm_bin=$LLM_ROOT/llm_demo-amp
+	local model=$LLM_ROOT/models/DeepSeek-R1-Distill-Qwen-1.5B_W8A8_RK3588.rkllm
+	local llm_log=${REPORT%.log}-rkllm.log
+	local bench_prefix=${REPORT%.log}-four-p
+	local rounds=24 timeout_seconds=300 duration=8 window=1
+	local llm_pid llm_rc=0 priority bench_rc base bench_log summary
+	local write_count pong_count ack_count lost_count timeout_count
+	local enospc_count eagain_count write_other_count nack_count
+	local duplicate_count unknown_count max_inflight
+	local before_msg after_msg expected_msg before_errors after_errors pending
+	local total_write=0
+	local -a bench_pids=() bench_rcs=() bench_logs=()
+	local -a before_full=(0 0 0 0) after_full=(0 0 0 0)
+	local -a write_counts=(0 0 0 0) pong_counts=(0 0 0 0)
+	local -a ack_counts=(0 0 0 0)
+
+	[[ -x $llm_bin ]] || remote_fail "RKLLM demo is not executable: $llm_bin"
+	[[ -r $model ]] || remote_fail "RKLLM model is not readable: $model"
+	[[ -d $LLM_ROOT/lib ]] || remote_fail "RKLLM library directory is absent"
+	[[ -x $WINDOW_BENCH ]] || remote_fail "window benchmark is not executable"
+	command -v timeout >/dev/null || remote_fail "timeout is required"
+	command -v stdbuf >/dev/null || remote_fail "stdbuf is required"
+	free -h
+	df -h "$LLM_ROOT" "$REMOTE_ROOT"
+
+	start_image "$image"
+	assert_session_active
+	assert_all_depths_zero
+	before_msg=$(mailmsg_worker_field msg)
+	before_errors=$(stats_protocol_error_total)
+	for priority in 0 1 2 3; do
+		before_full[$priority]=$(priority_full_count "$priority")
+		[[ ${before_full[$priority]} =~ ^[0-9]+$ ]] ||
+			remote_fail "cannot parse baseline p$priority full count"
+	done
+
+	note "starting $rounds RKLLM generations and simultaneous p0-p3 window=$window traffic"
+	(
+		for ((priority = 0; priority < rounds; priority++)); do
+			printf '0\n'
+		done
+		printf 'exit\n'
+	) | timeout "$timeout_seconds" stdbuf -oL -eL env \
+		LD_LIBRARY_PATH="$LLM_ROOT/lib" RKLLM_LOG_LEVEL=1 \
+		"$llm_bin" "$model" 64 512 >"$llm_log" 2>&1 &
+	llm_pid=$!
+	FOUR_PRIORITY_LLM_PID=$llm_pid
+	FOUR_PRIORITY_BENCH_PIDS=()
+	trap cleanup_four_priority_jobs EXIT
+
+	for ((priority = 0; priority < 600; priority++)); do
+		grep -q 'rkllm init success' "$llm_log" && break
+		kill -0 "$llm_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	grep -q 'rkllm init success' "$llm_log" || {
+		if wait "$llm_pid"; then llm_rc=0; else llm_rc=$?; fi
+		FOUR_PRIORITY_LLM_PID=
+		cat "$llm_log"
+		remote_fail "RKLLM did not reach init success, exit=$llm_rc"
+	}
+
+	# Each process owns one priority-scoped reader.  The four independent
+	# processes overlap for the full eight-second measurement window; this is
+	# a coexistence test, not a scheduler fairness measurement.
+	for priority in 0 1 2 3; do
+		bench_log=${bench_prefix}${priority}.log
+		bench_logs[$priority]=$bench_log
+		base=$((1000000 + priority * 1000000))
+		note "launching p$priority window=$window duration=${duration}s"
+		timeout "$((duration + 10))" "$WINDOW_BENCH" \
+			"$priority" "$window" "$duration" "$base" >"$bench_log" 2>&1 &
+		bench_pids[$priority]=$!
+		FOUR_PRIORITY_BENCH_PIDS[$priority]=${bench_pids[$priority]}
+	done
+
+	for priority in 0 1 2 3; do
+		if wait "${bench_pids[$priority]}"; then
+			bench_rc=0
+		else
+			bench_rc=$?
+		fi
+		bench_rcs[$priority]=$bench_rc
+	done
+
+	for priority in 0 1 2 3; do
+		bench_log=${bench_logs[$priority]}
+		printf '\n--- p%d benchmark ---\n' "$priority"
+		cat "$bench_log"
+		((bench_rcs[$priority] == 0)) ||
+			remote_fail "p$priority simultaneous benchmark exited ${bench_rcs[$priority]}"
+		summary=$(grep -E "^priority=$priority " "$bench_log" | tail -n 1 || true)
+		[[ -n $summary ]] || remote_fail "p$priority benchmark has no summary"
+		write_count=$(benchmark_summary_field "$summary" write_ok)
+		pong_count=$(benchmark_summary_field "$summary" pong)
+		ack_count=$(benchmark_summary_field "$summary" ack)
+		lost_count=$(benchmark_summary_field "$summary" lost)
+		timeout_count=$(benchmark_summary_field "$summary" timeout)
+		enospc_count=$(benchmark_summary_field "$summary" enospc)
+		eagain_count=$(benchmark_summary_field "$summary" eagain)
+		write_other_count=$(benchmark_summary_field "$summary" write_other)
+		nack_count=$(benchmark_summary_field "$summary" nack)
+		duplicate_count=$(benchmark_summary_field "$summary" duplicate)
+		unknown_count=$(benchmark_summary_field "$summary" unknown)
+		max_inflight=$(benchmark_summary_field "$summary" max_inflight)
+		[[ $write_count =~ ^[0-9]+$ && $pong_count =~ ^[0-9]+$ &&
+		   $ack_count =~ ^[0-9]+$ && $lost_count =~ ^[0-9]+$ &&
+		   $timeout_count =~ ^[0-9]+$ && $enospc_count =~ ^[0-9]+$ &&
+		   $eagain_count =~ ^[0-9]+$ && $write_other_count =~ ^[0-9]+$ &&
+		   $nack_count =~ ^[0-9]+$ && $duplicate_count =~ ^[0-9]+$ &&
+		   $unknown_count =~ ^[0-9]+$ && $max_inflight =~ ^[0-9]+$ ]] ||
+			remote_fail "cannot parse p$priority simultaneous summary"
+		((write_count > 0 && pong_count == write_count &&
+		  lost_count == 0 && timeout_count == 0 && enospc_count == 0 &&
+		  eagain_count == 0 && write_other_count == 0 && nack_count == 0 &&
+		  duplicate_count == 0 && unknown_count == 0 &&
+		  max_inflight <= window)) ||
+			remote_fail "p$priority simultaneous window lost or malformed a frame"
+		if ((priority <= 1)); then
+			((ack_count == write_count)) ||
+				remote_fail "reliable p$priority ACK count $ack_count != $write_count"
+		else
+			((ack_count == 0)) ||
+				remote_fail "unreliable p$priority unexpectedly returned ACKs"
+		fi
+		write_counts[$priority]=$write_count
+		pong_counts[$priority]=$pong_count
+		ack_counts[$priority]=$ack_count
+		total_write=$((total_write + write_count))
+	done
+
+	if wait "$llm_pid"; then
+		llm_rc=0
+	else
+		llm_rc=$?
+	fi
+	FOUR_PRIORITY_LLM_PID=
+	FOUR_PRIORITY_BENCH_PIDS=()
+	trap - EXIT
+	((llm_rc == 0)) || {
+		cat "$llm_log"
+		remote_fail "RKLLM four-priority test exited with status $llm_rc"
+	}
+	grep -Fq 'rkllm-runtime version: 1.3.0, rknpu driver version: 0.9.8' \
+		"$llm_log" || remote_fail "unexpected RKLLM/RKNPU version"
+	grep -Fq 'Enabled cpus: [3, 4, 5, 6]' "$llm_log" ||
+		remote_fail "RKLLM did not use the expected Linux CPU mask"
+	grep -Fq 'Enabled cpus num: 4' "$llm_log" ||
+		remote_fail "RKLLM enabled CPU count is not four"
+	if grep -Eq 'matmul\(w8a8\) run failed|rkllm init failed|Mismatch between enabled CPUs' \
+		"$llm_log"; then
+		remote_fail "RKLLM four-priority log contains a known failure"
+	fi
+	local generate_count robot_count
+	generate_count=$(grep -Ec '^I rkllm:  Generate[[:space:]]' "$llm_log" || true)
+	robot_count=$(grep -c 'robot:' "$llm_log" || true)
+	((generate_count == rounds)) || remote_fail \
+		"completed $generate_count RKLLM generations; expected $rounds"
+	((robot_count >= rounds)) || remote_fail \
+		"observed $robot_count robot prompts; expected at least $rounds"
+
+	wait_worker_idle_at "$((before_msg + total_write))"
+	after_msg=$(mailmsg_worker_field msg)
+	for priority in 0 1 2 3; do
+		after_full[$priority]=$(priority_full_count "$priority")
+		[[ ${after_full[$priority]} =~ ^[0-9]+$ ]] ||
+			remote_fail "cannot parse final p$priority full count"
+		((after_full[$priority] == before_full[$priority])) ||
+			remote_fail "p$priority full counter changed during simultaneous window"
+	done
+	((after_msg == before_msg + total_write)) || remote_fail \
+		"worker msg=$after_msg, expected $((before_msg + total_write)) from four benchmarks"
+
+	note "post-window four-priority regression"
+	run_four_priorities
+	expected_msg=$((before_msg + total_write + 4))
+	wait_worker_idle_at "$expected_msg"
+	after_msg=$(mailmsg_worker_field msg)
+	after_errors=$(stats_protocol_error_total)
+	pending=$(mailmsg_worker_field pending)
+	((after_msg == expected_msg)) || remote_fail \
+		"worker msg=$after_msg, expected $expected_msg after post checks"
+	((after_errors == before_errors)) || remote_fail \
+		"protocol error counters changed: $before_errors -> $after_errors"
+	[[ $pending == 0 || $pending == 0x0 ]] ||
+		remote_fail "worker pending bitmap is not empty: $pending"
+	[[ $(mailmsg_state) == active ]] || remote_fail "MailMsg session is no longer active"
+	grep -q 'state=on (0)' "$AMP/affinity_state" ||
+		remote_fail "CPU3 is no longer ON"
+	grep -Eq 'a2b_now=m0:0x0( |$)' <<<"$(mailmsg_status)" ||
+		remote_fail "an A2B doorbell remains pending"
+	assert_all_depths_zero
+
+	printf 'rkllm_generations=%d simultaneous_window=%d total_write_ok=%d p0_write_ok=%d p0_ack=%d p0_pong=%d p1_write_ok=%d p1_ack=%d p1_pong=%d p2_write_ok=%d p2_ack=%d p2_pong=%d p3_write_ok=%d p3_ack=%d p3_pong=%d\n' \
+		"$generate_count" "$window" "$total_write" \
+		"${write_counts[0]}" "${ack_counts[0]}" "${pong_counts[0]}" \
+		"${write_counts[1]}" "${ack_counts[1]}" "${pong_counts[1]}" \
+		"${write_counts[2]}" "${ack_counts[2]}" "${pong_counts[2]}" \
+		"${write_counts[3]}" "${ack_counts[3]}" "${pong_counts[3]}"
+	free -h
+	remote_snapshot
+	pass "four priorities ran simultaneously at window=$window during RKLLM generation"
+}
+
 remote_main()
 {
 	local name path timestamp
@@ -1071,6 +1591,7 @@ remote_main()
 	discover_amp
 	CLIENT=$REMOTE_ROOT/mailmsg-user-client-aarch64
 	EXCLUSIVE_TEST=$REMOTE_ROOT/mailmsg-exclusive-reader-test-aarch64
+	WINDOW_BENCH=$REMOTE_ROOT/mailmsg-window-bench-aarch64
 	for path in status mailmsg_stats affinity_state image start rearm \
 		mailmsg_ping mailmsg_stop mailmsg_crc_inject mailmsg_notify_inject \
 		mailmsg_queue_push mailmsg_response doorbell; do
@@ -1097,6 +1618,8 @@ remote_main()
 	stop-timeout) run_stop_timeout_profile ;;
 	llm-coexistence) run_llm_coexistence_profile ;;
 	llm-soak) run_llm_soak_profile ;;
+	llm-p2-window) run_llm_p2_window_profile ;;
+	llm-four-priority) run_llm_four_priority_profile ;;
 	esac
 
 	note "profile result: PASS"

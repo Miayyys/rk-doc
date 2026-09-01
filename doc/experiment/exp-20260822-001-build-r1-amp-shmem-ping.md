@@ -678,6 +678,39 @@ RKLLM 进程运行期间 p2 16 次 PING/PONG 的值 `1501..1516` 全部成功；
 
 结论：本轮约 3 分钟、24 轮、单生产者的 RAM-only 功能 soak 通过，且运行期间四 priority 请求均有记录、最终队列和错误统计归零；这不证明长期稳定性、并发 writers、吞吐/实时上界或持久化。唯一后续应在真实任务负载定义后，再选择更长时段、并发或 priority 压力验证。
 
+### 步骤 61：R7 direct-doorbell p2 并发窗口与 RKLLM 回归（已验证）
+
+目的与预期结果：在 direct-doorbell kernel 上运行 RKLLM 与 p2 并发窗口，观察 PONG 回收、超时/丢失、输入 ENOSPC 及反向 TX-full 统计；确认本工作负载下各窗口结果和最终四优先级回归。该步骤不将窗口结果解释为通用吞吐或并发硬上限。
+
+本次事件时间为 2026-09-01，具体时刻未记录。执行端为 Arch 主机仓库根目录 `/home/loser/Study/rk3588`，命令为 `scripts/mailmsg-v1-test.sh --profile llm-p2-window`；脚本通过 SSH 在板端运行 profile。使用 fresh R7 RAM-only 会话、Linux `5.10.252`、7 核、normal 固件，normal 后为 active、session `1/1`、CPU3 `on`；未写 eMMC。direct-doorbell kernel 路径未见 generic mailbox TX queue `ENOBUFS`。
+
+窗口 1/2/4/7 的 PONG 丢失均为 `0`；窗口 8/16/32 的丢失分别为 `1/9/25`，对应 reverse full delta 也分别为 `1/9/25`。p2 输入 ENOSPC 按该 profile 记录为 `0/0/0/33/224`。24 次 RKLLM Generate 全完成，`accepted=2616267`、PONG `2616232`、lost/timeout `35`、ENOSPC `257`。上述 `lost` 仍定义为 5 秒 drain 窗口内未收到 PONG；reverse full 同步增长支持本工作负载下共享内存输入/反向响应环饱和的观察，但单凭 lost 数值不能推出通用硬上限或独立因果结论。
+
+最终 post 四优先级回归通过；状态为 active、session `1/1`、CPU3 `on`、`a2b=0`、pending `0`，p0–p3 depth 均为 `0`，full/incomplete/crc/invalid/stale 均为 `0`。worker 为 valid，`commit=1010802`、`irq=2616166`、`wake=1010801`、`drain=1010776`、`msg=2616271`、`empty=25`；p0/p1/p3 各 `tx=1/rx=3/2/1`，p2 `tx=2616268/full=257/rx=2616233/depth=0`。工具 `build/local/mailmsg-v1-tools/mailmsg-window-bench-aarch64` 大小 `884136 B`、SHA-256 `a0dca59a1b4f941f8b21ebfc2e6d840120d664b838c4a285a58848fb74251e4c`。
+
+证据来自本机目录 `build/local/mailmsg-p2-window-20260901/`：完整报告原始板端路径为 `/userdata/mailmsg-v1-r7/reports/llm-p2-window-20231122-045851.log`，已原字节复制为 [llm-p2-window.log](../_assets/mailmsg-r7/llm-p2-window.log)，大小 `7005 B`、SHA-256 `b7c4492cd1dfadab2cea3e88de865b8e70826ce5144c67cc90d0682a08828dbe`；RKLLM 日志已复制为 [llm-p2-window-rkllm.log](../_assets/mailmsg-r7/llm-p2-window-rkllm.log)，大小 `28056 B`、SHA-256 `9be1e10cc11ee2adae1130c372b673045a11757adaefe42d8c4082959da2f53a`；窗口 bench 日志已复制为 [llm-p2-window-bench.log](../_assets/mailmsg-r7/llm-p2-window-bench.log)，大小 `1994 B`、SHA-256 `b18280d329ea66a911bf94ff3a2cac293e2917c140dce519b9fd22eae84d0200`。三份附件均保持原字节；板端报告文件名含错误 RTC 时间，不作为事件时间。
+
+结论：本工作负载下，窗口 1/2/4/7 无损，窗口 8/16/32 分别观察到 1/9/25 条 lost；direct-doorbell 下未见 generic mailbox TX queue `ENOBUFS`，p2 的输入 ENOSPC 与反向 full 统计显示共享内存输入/反向响应环饱和。p2 并发 profile 及最终四优先级回归已通过，但这不是通用硬上限、吞吐/实时性承诺，也不覆盖更长时间、并发 writers 或持久化。
+
+### 步骤 62：R7 四优先级同时负载与 RKLLM window=1 回归（已验证）
+
+目的与预期结果：在 fresh R7 normal RAM-only 会话中，同时运行 p0–p3 四路 `window=1`、持续 8 秒并配合 24 次 RKLLM Generate，确认四路各自的写入、PONG、ACK/错误统计和 post 回归均闭环；本步骤不把 window=1 结果解释为四路并发上限、公平性或长期性能保证。
+
+本次事件时间为 2026-09-01，具体时刻未记录。执行端为 Arch 主机仓库根目录 `/home/loser/Study/rk3588`，命令为 `scripts/mailmsg-v1-test.sh --profile llm-four-priority`；脚本通过 SSH 在板端运行 profile。Linux `5.10.252`、`nproc=7`，fresh normal 后 session `1/1`、CPU3 `on`；全程 RAM-only、未写 eMMC。
+
+window=1 四路同时运行 8 秒：p0 write/pong/ack=`97339/97339/97339`，p1=`98177/98177/98177`，p2=`110227/110227/0`，p3=`106192/106192/0`；四路的 ENOSPC、EAGAIN、lost、timeout 和 protocol errors 均为 `0`，各自 `max_inflight=1`，总 write=`411935`。24 次 RKLLM Generate 全完成；post p0–p3 回归通过。最终 `worker msg=411939`（基线 0 + 411935 次窗口写入 + 4 次 post 请求），`pending=0`、`a2b=0`、四路 depth 均为 `0`，full/incomplete/crc/invalid/stale 均为 `0`，mailbox 通知均为 `SENT`。
+
+证据来自本机目录 `build/local/mailmsg-four-priority-20260901/`，原始板端报告路径为 `/userdata/mailmsg-v1-r7/reports/llm-four-priority-20231122-050008.log`；报告及四路日志已保持原字节复制至 `doc/_assets/mailmsg-r7/`：
+
+- [llm-four-priority.log](../_assets/mailmsg-r7/llm-four-priority.log)：`5798 B`，SHA-256 `b0c80c4f28586e669345409ab636418923824da48b5a87981fea6f4f77235f0a`。
+- [llm-four-priority-rkllm.log](../_assets/mailmsg-r7/llm-four-priority-rkllm.log)：`28056 B`，SHA-256 `1518c82376b036e7f235b1a166047c7cf3fcff959cf4a5fbbf3a9bee30125296`。
+- [llm-four-priority-p0.log](../_assets/mailmsg-r7/llm-four-priority-p0.log)：`284 B`，SHA-256 `a7c93a193388bcb7a6c85abaf5029d04ddad6305db7265f398b7af73e8b6f15a`。
+- [llm-four-priority-p1.log](../_assets/mailmsg-r7/llm-four-priority-p1.log)：`284 B`，SHA-256 `6d074b2000d8a600140103f6ab330058771043297ce5fb43c2a3a86b3b48c574`。
+- [llm-four-priority-p2.log](../_assets/mailmsg-r7/llm-four-priority-p2.log)：`284 B`，SHA-256 `024de0ad7719f70d01eaad8726352edcf7c7b999103b1dc7d19a8cc4c5873a6b`。
+- [llm-four-priority-p3.log](../_assets/mailmsg-r7/llm-four-priority-p3.log)：`284 B`，SHA-256 `0ab55e61d40060b2d24919ee081918453e45c856ac5222fe37bdbec74d632a8f`。
+
+结论：在本次 `window=1` 四优先级同时负载与 24 次 RKLLM Generate 中，四路均完成 8 秒功能回归，最终队列、通知、错误和 pending 观察均归零；该证据仅支持本工作负载下的同时共存功能，不构成四路并发上限、公平性、吞吐/实时性或长期稳定性保证。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -749,6 +782,8 @@ RKLLM 进程运行期间 p2 16 次 PING/PONG 的值 `1501..1516` 全部成功；
 | R7 主机提交身份与冻结材料 | 记录源码/内核身份及冻结目录校验，远端发布状态保持准确 | 主仓库/现有文档 commit `c4267d9`；嵌套内核 commit `3944bf4a7`，format-patch SHA-256 `bfe13e0abdff5ef5699e64ad513b7a2b985a2feb8be851acdf4c9e5b773d669c`；`build/local/mailmsg-v1-final-r7/` 的 `SHA256SUMS` 16 个文件全部校验通过并已只读；freeze-manifest SHA-256 `5395da9deb86ef0fd912b76fa8080ef13dcc91faa3c102dc3a120158cfa8faae`，SHA256SUMS SHA-256 `6bb781830a94e8148eb37bd88da8ce77df1e7bd0092e7251a9117ffb7c244c54`；目录无四 profile 独立原始串口日志，验证事实见步骤 57 摘要；提交 `c4267d9` 与 `087d4ef` 已正常推送至 `origin/main` | 通过（本机材料已核对；R7 主仓库已发布） |
 | R7 RKLLM 共存短时功能回归 | normal session active 时，RKLLM 进程运行期间 p2、结束后 p0 仍完成回环且统计无错误 | fresh R7 FIT；p0 `41→ACK+PONG 42`；Runtime `1.3.0`、RKNPU `0.9.8`、CPU `[3,4,5,6]`/4，生成 63 tokens、`8.34 tok/s`；p2 `1501..1516` 全成功，p0 `1499→ACK+PONG 1500`；终态 worker valid、`commit=19/irq=18/wake=18/drain=18/msg=18/pending=0`、p0/p2 depth0、错误计数全0；报告附件见步骤 59 | 通过（一次短时 RAM-only 功能共存；不覆盖压力/性能/长期稳定/持久化） |
 | R7 RKLLM llm-soak 单生产者回归 | 约 3 分钟、24 轮真实 Generate 全完成；单串行 producer 轮询 p0–p3，终态四 priority depth/错误归零 | `robot=24`、RKLLM exit `0`，总 Generate `168089.61 ms`、共 `1535` tokens；p0/p1/p2/p3 请求 `159/159/159/158` 共 `635`，最终 active/session `1/1`、CPU3 on、a2b/pending `0`、worker `commit=640/irq=639/wake=639/drain=639/msg=639`、full/incomplete/crc/invalid/stale 全 `0`；三份原始附件及完整 SHA 见步骤 60 | 通过（一次约 3 分钟 RAM-only 单生产者功能 soak；不覆盖长期/并发/性能上界/持久化） |
+| R7 direct-doorbell p2 并发窗口与 RKLLM 回归 | direct-doorbell 路径不被 generic mailbox TX queue `ENOBUFS` 阻塞；窗口 1/2/4/7 无损，窗口 8/16/32 记录丢失与 reverse full 对照，最终四优先级回归通过 | 窗口 1/2/4/7 丢失 `0`，窗口 8/16/32 丢失 `1/9/25`，reverse full delta 同为 `1/9/25`；p2 输入 ENOSPC `0/0/0/33/224`；24 次 RKLLM Generate，accepted `2616267`、PONG `2616232`、lost/timeout `35`、ENOSPC `257`；最终 active/session `1/1`、CPU3 on、a2b/pending `0`、全 depth `0`、worker `commit=1010802/irq=2616166/wake=1010801/drain=1010776/msg=2616271`；证据附件与完整 SHA 见步骤 61 | 通过（本工作负载下的 p2 并发窗口功能回归；不构成通用硬上限或性能承诺） |
+| R7 四优先级同时负载与 RKLLM window=1 回归 | 四 priority 同时运行 8 秒，四路 write/PONG/ACK（按可靠级别）完整，24 次 RKLLM Generate 完成且 post 回归通过 | p0 `97339/97339/97339`、p1 `98177/98177/98177`、p2 `110227/110227/0`、p3 `106192/106192/0`；总 write `411935`，四路 ENOSPC/EAGAIN/lost/timeout/protocol errors 全 `0`，max_inflight `1`；worker msg `411939`、pending/a2b/depth `0`、full/incomplete/crc/invalid/stale `0`，notify 均 `SENT`；证据附件与完整 SHA 见步骤 62 | 通过（仅本工作负载下 window=1 同时功能；不构成并发上限、公平性或长期性能保证） |
 
 ## 结论
 

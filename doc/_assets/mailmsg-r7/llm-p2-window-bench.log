@@ -1,0 +1,14 @@
+priority=2 window=1 duration_s=8 attempts=145383 write_ok=145383 enospc=0 eagain=0 write_other=0 pong=145383 ack=0 nack=0 duplicate=0 unknown=0 timeout=0 lost=0 max_inflight=1 throughput_rps=18172.875
+latency_us count=145383 min=2.917 p50=28.873 p95=55.705 p99=162.158 max=10812.086
+priority=2 window=2 duration_s=8 attempts=367558 write_ok=367558 enospc=0 eagain=0 write_other=0 pong=367558 ack=0 nack=0 duplicate=0 unknown=0 timeout=0 lost=0 max_inflight=2 throughput_rps=45944.750
+latency_us count=367558 min=4.374 p50=24.791 p95=47.831 p99=118.119 max=10341.945
+priority=2 window=4 duration_s=8 attempts=417980 write_ok=417980 enospc=0 eagain=0 write_other=0 pong=417980 ack=0 nack=0 duplicate=0 unknown=0 timeout=0 lost=0 max_inflight=4 throughput_rps=52247.500
+latency_us count=417980 min=7.000 p50=37.332 p95=121.910 p99=241.779 max=1038.278
+priority=2 window=7 duration_s=8 attempts=415423 write_ok=415423 enospc=0 eagain=0 write_other=0 pong=415423 ack=0 nack=0 duplicate=0 unknown=0 timeout=0 lost=0 max_inflight=7 throughput_rps=51927.875
+latency_us count=415423 min=11.666 p50=66.205 p95=175.574 p99=324.607 max=1789.862
+priority=2 window=8 duration_s=8 attempts=424137 write_ok=424137 enospc=0 eagain=0 write_other=0 pong=424136 ack=0 nack=0 duplicate=0 unknown=0 timeout=1 lost=1 max_inflight=8 throughput_rps=53017.000
+latency_us count=424136 min=11.957 p50=64.455 p95=176.157 p99=320.816 max=2196.132
+priority=2 window=16 duration_s=8 attempts=429748 write_ok=429715 enospc=33 eagain=0 write_other=0 pong=429706 ack=0 nack=0 duplicate=0 unknown=0 timeout=9 lost=9 max_inflight=16 throughput_rps=53713.250
+latency_us count=429706 min=11.666 p50=54.830 p95=267.735 p99=405.395 max=2051.473
+priority=2 window=32 duration_s=8 attempts=416295 write_ok=416071 enospc=224 eagain=0 write_other=0 pong=416046 ack=0 nack=0 duplicate=0 unknown=0 timeout=25 lost=25 max_inflight=32 throughput_rps=52005.750
+latency_us count=416046 min=11.957 p50=68.246 p95=159.825 p99=248.778 max=1287.347

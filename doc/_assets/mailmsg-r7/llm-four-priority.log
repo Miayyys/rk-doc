@@ -1,0 +1,77 @@
+
+[05:00:08] MailMsg V1 revision 7 board profile: llm-four-priority
+report=/userdata/mailmsg-v1-r7/reports/llm-four-priority-20231122-050008.log
+PASS: R1 artifact hashes
+
+--- diagnostic snapshot ---
+image=0/49152 affinity=not-queried (0) affinity_seen_on=0 mailmsg_state=unarmed session=0/0 session_result=-11 stop_sequence=0 stop_reply=0 stop_result=-11 stop_notify=-11 affinity_monitor=0/0 cpu_on_attempted=0 cpu_on_ret=-11 m0c0=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c1=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c2=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c3=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 a2b_now=m0:0x0 mailmsg_notify=-11 notify_inject=0/-5/0 mailmsg_tx_full=valid:1/commit:36/count:35/priority:2/type:2/result:-2 mailmsg_worker=valid:1/commit:1010802/irq:2616166/wake:1010801/drain:1010776/msg:2616271/empty:25/last:0x8/pending:0x0/priority:3 mbox_observation=0x41434b43/0x8/0x0/0x8 magic=0x48420a9b current_el=4
+p0 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+p1 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+p2 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+p3 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+mpidr=0x300 level=0 state=off (1)
+--- end snapshot ---
+PASS: R7 kernel/DT/sysfs preflight
+               total        used        free      shared  buff/cache   available
+Mem:           3.8Gi       197Mi       3.2Gi       1.0Mi       436Mi       3.6Gi
+Swap:             0B          0B          0B
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/mmcblk0p8   15G  3.9G  9.7G  29% /userdata
+/dev/mmcblk0p8   15G  3.9G  9.7G  29% /userdata
+
+[05:00:08] loading mailmsg-v1-normal.bin into the reserved CPU3 image window
+PASS: SESSION_READY generation 1 and ACTIVE state
+
+[05:00:08] starting 24 RKLLM generations and simultaneous p0-p3 window=1 traffic
+
+[05:00:22] launching p0 window=1 duration=8s
+
+[05:00:22] launching p1 window=1 duration=8s
+
+[05:00:22] launching p2 window=1 duration=8s
+
+[05:00:22] launching p3 window=1 duration=8s
+
+--- p0 benchmark ---
+priority=0 window=1 duration_s=8 attempts=97339 write_ok=97339 enospc=0 eagain=0 write_other=0 pong=97339 ack=97339 nack=0 duplicate=0 unknown=0 timeout=0 lost=0 max_inflight=1 throughput_rps=12167.375
+latency_us count=97339 min=4.375 p50=46.373 p95=115.785 p99=380.604 max=10399.691
+
+--- p1 benchmark ---
+priority=1 window=1 duration_s=8 attempts=98177 write_ok=98177 enospc=0 eagain=0 write_other=0 pong=98177 ack=98177 nack=0 duplicate=0 unknown=0 timeout=0 lost=0 max_inflight=1 throughput_rps=12272.125
+latency_us count=98177 min=4.666 p50=46.373 p95=118.702 p99=381.772 max=10182.412
+
+--- p2 benchmark ---
+priority=2 window=1 duration_s=8 attempts=110227 write_ok=110227 enospc=0 eagain=0 write_other=0 pong=110227 ack=0 nack=0 duplicate=0 unknown=0 timeout=0 lost=0 max_inflight=1 throughput_rps=13778.375
+latency_us count=110227 min=3.208 p50=33.539 p95=101.494 p99=333.648 max=10300.530
+
+--- p3 benchmark ---
+priority=3 window=1 duration_s=8 attempts=106192 write_ok=106192 enospc=0 eagain=0 write_other=0 pong=106192 ack=0 nack=0 duplicate=0 unknown=0 timeout=0 lost=0 max_inflight=1 throughput_rps=13274.000
+latency_us count=106192 min=3.208 p50=35.581 p95=107.911 p99=347.940 max=10429.440
+
+[05:03:13] post-window four-priority regression
+
+[05:03:13] four-priority user ABI regression
+priority=0 type=3 sequence=607453 length=8 peer_sequence=411936 status=0
+priority=0 type=2 sequence=607454 length=4 value=101
+priority=1 type=3 sequence=607455 length=8 peer_sequence=411937 status=0
+priority=1 type=2 sequence=607456 length=4 value=201
+priority=2 type=2 sequence=607457 length=4 value=301
+priority=3 type=2 sequence=607458 length=4 value=401
+PASS: p0/p1 ACK+PONG and p2/p3 PONG
+rkllm_generations=24 simultaneous_window=1 total_write_ok=411935 p0_write_ok=97339 p0_ack=97339 p0_pong=97339 p1_write_ok=98177 p1_ack=98177 p1_pong=98177 p2_write_ok=110227 p2_ack=0 p2_pong=110227 p3_write_ok=106192 p3_ack=0 p3_pong=106192
+               total        used        free      shared  buff/cache   available
+Mem:           3.8Gi       202Mi       1.7Gi       1.0Mi       1.9Gi       3.6Gi
+Swap:             0B          0B          0B
+
+--- diagnostic snapshot ---
+image=49152/49152 affinity=on (0) affinity_seen_on=1 mailmsg_state=active session=1/1 session_result=0 stop_sequence=0 stop_reply=0 stop_result=-11 stop_notify=-11 affinity_monitor=182/0 cpu_on_attempted=1 cpu_on_ret=0 m0c0=rx:126526/0xb2a10000/0x0,tx:97340/19,notify:0/97340/0/0 m0c1=rx:128345/0xb2a10001/0x1,tx:98178/17,notify:0/98178/0/0 m0c2=rx:107983/0xb2a10002/0x2,tx:110228/7,notify:0/110228/0/0 m0c3=rx:104545/0xb2a10003/0x3,tx:106193/12,notify:0/106193/0/0 a2b_now=m0:0x0 mailmsg_notify=0 notify_inject=0/-5/0 mailmsg_tx_full=valid:1/commit:1/count:0/priority:4/type:0/result:0 mailmsg_worker=valid:1/commit:389024/irq:411939/wake:389023/drain:388980/msg:411939/empty:43/last:0x8/pending:0x0/priority:3 mbox_observation=0x41434b43/0x8/0x0/0x8 magic=0x484202b8 current_el=4
+p0 tx=97340 full=0 high=1 depth=0 notify=97340/0/0 rx=194681 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p1 tx=98178 full=0 high=1 depth=0 notify=98178/0/0 rx=196356 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p2 tx=110228 full=0 high=1 depth=0 notify=110228/0/0 rx=110228 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p3 tx=106193 full=0 high=1 depth=0 notify=106193/0/0 rx=106193 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+mpidr=0x300 level=0 state=on (0)
+--- end snapshot ---
+PASS: four priorities ran simultaneously at window=1 during RKLLM generation
+
+[05:03:13] profile result: PASS
+Full report saved at /userdata/mailmsg-v1-r7/reports/llm-four-priority-20231122-050008.log
