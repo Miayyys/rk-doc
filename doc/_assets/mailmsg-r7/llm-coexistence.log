@@ -1,0 +1,92 @@
+
+[04:59:07] MailMsg V1 revision 7 board profile: llm-coexistence
+report=/userdata/mailmsg-v1-r7/reports/llm-coexistence-20231122-045907.log
+PASS: R1 artifact hashes
+
+--- diagnostic snapshot ---
+image=0/49152 affinity=not-queried (0) affinity_seen_on=0 mailmsg_state=unarmed session=0/0 session_result=-11 stop_sequence=0 stop_reply=0 stop_result=-11 stop_notify=-11 affinity_monitor=0/0 cpu_on_attempted=0 cpu_on_ret=-11 m0c0=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c1=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c2=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 m0c3=rx:0/0x0/0x0,tx:0/-11,notify:-11/0/0/0 a2b_now=m0:0x0 mailmsg_notify=-11 notify_inject=0/-5/0 mailmsg_tx_full=valid:1/commit:1/count:0/priority:4/type:0/result:0 mailmsg_worker=valid:1/commit:3/irq:2/wake:2/drain:2/msg:1/empty:0/last:0x1/pending:0x0/priority:4 mbox_observation=0x41434b43/0x1/0x0/0x1 magic=0x4842a9c2 current_el=4
+p0 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+p1 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+p2 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+p3 tx=0 full=0 high=0 depth=-1 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=-1
+mpidr=0x300 level=0 state=off (1)
+--- end snapshot ---
+PASS: V6 kernel/DT/sysfs preflight
+               total        used        free      shared  buff/cache   available
+Mem:           3.8Gi       193Mi       3.2Gi       1.0Mi       431Mi       3.6Gi
+Swap:             0B          0B          0B
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/mmcblk0p8   15G  3.8G  9.7G  29% /userdata
+/dev/mmcblk0p8   15G  3.8G  9.7G  29% /userdata
+
+[04:59:07] loading mailmsg-v1-normal.bin into the reserved CPU3 image window
+PASS: SESSION_READY generation 1 and ACTIVE state
+
+[04:59:07] pre-RKLLM p0 regression
+priority=0 type=3 sequence=2 length=8 peer_sequence=1 status=0
+priority=0 type=2 sequence=3 length=4 value=42
+
+[04:59:07] starting RKLLM generation with concurrent p2 traffic
+priority=2 type=2 sequence=4 length=4 value=1501
+priority=2 type=2 sequence=5 length=4 value=1502
+priority=2 type=2 sequence=6 length=4 value=1503
+priority=2 type=2 sequence=7 length=4 value=1504
+priority=2 type=2 sequence=8 length=4 value=1505
+priority=2 type=2 sequence=9 length=4 value=1506
+priority=2 type=2 sequence=10 length=4 value=1507
+priority=2 type=2 sequence=11 length=4 value=1508
+priority=2 type=2 sequence=12 length=4 value=1509
+priority=2 type=2 sequence=13 length=4 value=1510
+priority=2 type=2 sequence=14 length=4 value=1511
+priority=2 type=2 sequence=15 length=4 value=1512
+priority=2 type=2 sequence=16 length=4 value=1513
+priority=2 type=2 sequence=17 length=4 value=1514
+priority=2 type=2 sequence=18 length=4 value=1515
+priority=2 type=2 sequence=19 length=4 value=1516
+rkllm init start
+I rkllm: rkllm-runtime version: 1.3.0, rknpu driver version: 0.9.8, platform: RK3588
+I rkllm: loading rkllm model from /userdata/rkllm-api-demo/models/DeepSeek-R1-Distill-Qwen-1.5B_W8A8_RK3588.rkllm
+I rkllm: rkllm-toolkit version: 1.2.1b1, max_context_limit: 4096, npu_core_num: 3, target_platform: RK3588, model_dtype: W8A8
+I rkllm: Enabled cpus: [3, 4, 5, 6]
+I rkllm: Enabled cpus num: 4
+rkllm init success
+
+**********************可输入以下问题对应序号获取回答/或自定义输入********************
+
+[0] 现有一笼子，里面有鸡和兔子若干只，数一数，共有头14个，腿38条，求鸡和兔子各有多少只？
+[1] 有28位小朋友排成一行,从左边开始数第10位是学豆,从右边开始数他是第几位?
+
+*************************************************************************
+
+
+user: 现有一笼子，里面有鸡和兔子若干只，数一数，共有头14个，腿38条，求鸡和兔子各有多少只？
+robot: 首先，设鸡的数量为x，兔子的数量为y。
+
+根据题意，每只动物都有一个头，因此有方程：
+x + y = 14
+
+接下来，考虑腿的总数。鸡每只有两条腿，兔子每只有四条腿，所以腿的总数由两部分
+I rkllm: --------------------------------------------------------------------------------------
+I rkllm:  Model init time (ms)  13031.29                                                                   
+I rkllm: --------------------------------------------------------------------------------------
+I rkllm:  Stage         Total Time (ms)  Tokens    Time per Token (ms)      Tokens per Second      
+I rkllm: --------------------------------------------------------------------------------------
+I rkllm:  Prefill       247.91           40        6.20                     161.35                 
+I rkllm:  Generate      7555.13          63        119.92                   8.34                   
+I rkllm: --------------------------------------------------------------------------------------
+I rkllm:  Peak Memory Usage (MB)
+I rkllm:  1677.23     
+I rkllm: --------------------------------------------------------------------------------------
+
+user: 
+[04:59:30] post-RKLLM p0 regression
+priority=0 type=3 sequence=20 length=8 peer_sequence=18 status=0
+priority=0 type=2 sequence=21 length=4 value=1500
+p0 tx=2 full=0 high=1 depth=0 notify=2/0/0 rx=5 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p1 tx=0 full=0 high=0 depth=0 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p2 tx=16 full=0 high=1 depth=0 notify=16/0/0 rx=16 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+p3 tx=0 full=0 high=0 depth=0 notify=0/0/0 rx=0 incomplete=0 crc=0 invalid=0 stale=0 depth=0
+PASS: RKLLM generation coexisted with 16 p2 requests and post-run p0
+
+[04:59:30] profile result: PASS
+Full report saved at /userdata/mailmsg-v1-r7/reports/llm-coexistence-20231122-045907.log

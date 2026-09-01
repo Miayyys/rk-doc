@@ -13,6 +13,7 @@ readonly SCRIPT_NAME=${0##*/}
 readonly DEFAULT_R1_HOST=10.42.0.193
 readonly DEFAULT_R1_USER=root
 readonly DEFAULT_REMOTE_ROOT=/userdata/mailmsg-v1-r7
+readonly DEFAULT_LLM_ROOT=/userdata/rkllm-api-demo
 
 MODE=host
 PROFILE=
@@ -22,6 +23,7 @@ R1_HOST=${R1_HOST:-$DEFAULT_R1_HOST}
 R1_USER=${R1_USER:-$DEFAULT_R1_USER}
 R1_IDENTITY=${R1_IDENTITY:-${HOME}/.ssh/id_ed25519}
 REMOTE_ROOT=${MAILMSG_REMOTE_ROOT:-$DEFAULT_REMOTE_ROOT}
+LLM_ROOT=${RKLLM_DEMO_ROOT:-$DEFAULT_LLM_ROOT}
 
 usage()
 {
@@ -37,9 +39,11 @@ Profiles (one fresh RAM boot per terminal profile):
   stop-refused   Normal image must refuse STOP and remain usable.
   stop-timeout   STOP request is deliberately not consumed; ends terminal.
   start-timeout  SESSION_READY is deliberately withheld; ends terminal.
+  llm-coexistence  Normal image plus RKLLM generation and concurrent p2 traffic.
 
 Host environment overrides: R1_HOST, R1_USER, R1_IDENTITY,
-MAILMSG_REMOTE_ROOT.  Uploads only to /userdata; never writes a boot partition.
+MAILMSG_REMOTE_ROOT, RKLLM_DEMO_ROOT.  Uploads only to /userdata; never writes
+a boot partition.
 Before --profile, manually RAM-boot the uploaded FIT from U-Boot; this script
 does not automate the U-Boot console or change the persistent boot image.
 EOF
@@ -92,6 +96,11 @@ while (($#)); do
 		REMOTE_ROOT=$2
 		shift 2
 		;;
+	--llm-root)
+		(($# >= 2)) || { usage >&2; exit 2; }
+		LLM_ROOT=$2
+		shift 2
+		;;
 	--upload-only)
 		UPLOAD_ONLY=1
 		shift
@@ -113,7 +122,7 @@ while (($#)); do
 done
 
 case ${PROFILE:-none} in
-	none|controlled|stop-refused|stop-timeout|start-timeout) ;;
+	none|controlled|stop-refused|stop-timeout|start-timeout|llm-coexistence) ;;
 	*) fail "unknown profile: $PROFILE"; exit 2 ;;
 esac
 
@@ -121,6 +130,13 @@ if [[ ! $REMOTE_ROOT =~ ^/userdata(/[A-Za-z0-9._-]+)+$ ||
 	$REMOTE_ROOT == */./* || $REMOTE_ROOT == */../* ||
 	$REMOTE_ROOT == */. || $REMOTE_ROOT == */.. ]]; then
 	fail "remote root must be an absolute, simple /userdata path: $REMOTE_ROOT"
+	exit 2
+fi
+
+if [[ ! $LLM_ROOT =~ ^/userdata(/[A-Za-z0-9._-]+)+$ ||
+	$LLM_ROOT == */./* || $LLM_ROOT == */../* ||
+	$LLM_ROOT == */. || $LLM_ROOT == */.. ]]; then
+	fail "LLM root must be an absolute, simple /userdata path: $LLM_ROOT"
 	exit 2
 fi
 
@@ -277,8 +293,9 @@ host_main()
 	fi
 
 	note "running remote profile: $PROFILE"
-	printf -v remote_cmd 'exec %q --remote --remote-root %q --profile %q' \
-		"$REMOTE_ROOT/$SCRIPT_NAME" "$REMOTE_ROOT" "$PROFILE"
+	printf -v remote_cmd \
+		'exec %q --remote --remote-root %q --llm-root %q --profile %q' \
+		"$REMOTE_ROOT/$SCRIPT_NAME" "$REMOTE_ROOT" "$LLM_ROOT" "$PROFILE"
 	ssh -tt "${ssh_opts[@]}" "$target" "$remote_cmd"
 }
 
@@ -754,6 +771,125 @@ run_stop_timeout_profile()
 	printf 'A fresh U-Boot RAM boot is required before another profile.\n'
 }
 
+stats_error_total()
+{
+	awk '
+		/^p[0-3] / {
+			for (i = 1; i <= NF; i++) {
+				if ($i ~ /^(full|incomplete|crc|invalid|stale)=/) {
+					split($i, field, "=")
+					total += field[2]
+				}
+			}
+		}
+		END { print total + 0 }
+	' "$AMP/mailmsg_stats"
+}
+
+run_llm_coexistence_profile()
+{
+	local image=$REMOTE_ROOT/mailmsg-v1-normal.bin
+	local llm_bin=$LLM_ROOT/llm_demo-amp
+	local model=$LLM_ROOT/models/DeepSeek-R1-Distill-Qwen-1.5B_W8A8_RK3588.rkllm
+	local llm_log=${REPORT%.log}-rkllm.log
+	local llm_pid index value output llm_rc=0 overlap=0
+	local before_msg after_msg before_errors after_errors pending
+
+	[[ -x $llm_bin ]] || remote_fail "RKLLM demo is not executable: $llm_bin"
+	[[ -r $model ]] || remote_fail "RKLLM model is not readable: $model"
+	[[ -d $LLM_ROOT/lib ]] || remote_fail "RKLLM library directory is absent"
+	command -v timeout >/dev/null || remote_fail "timeout is required"
+	command -v stdbuf >/dev/null || remote_fail "stdbuf is required"
+	free -h
+	df -h "$LLM_ROOT" "$REMOTE_ROOT"
+
+	start_image "$image"
+	assert_session_active
+	note "pre-RKLLM p0 regression"
+	run_client 0 41
+	assert_all_depths_zero
+	before_msg=$(mailmsg_worker_field msg)
+	before_errors=$(stats_error_total)
+
+	note "starting RKLLM generation with concurrent p2 traffic"
+	(
+		printf '0\n'
+		sleep 15
+		printf 'exit\n'
+	) | timeout 300 stdbuf -oL -eL env \
+		LD_LIBRARY_PATH="$LLM_ROOT/lib" RKLLM_LOG_LEVEL=1 \
+		"$llm_bin" "$model" 64 512 >"$llm_log" 2>&1 &
+	llm_pid=$!
+
+	for ((index = 0; index < 600; index++)); do
+		grep -q 'rkllm init success' "$llm_log" && break
+		kill -0 "$llm_pid" 2>/dev/null || break
+		sleep 0.1
+	done
+	grep -q 'rkllm init success' "$llm_log" || {
+		set +e
+		wait "$llm_pid"
+		llm_rc=$?
+		set -e
+		cat "$llm_log"
+		remote_fail "RKLLM did not reach init success, exit=$llm_rc"
+	}
+
+	for ((index = 0; index < 16; index++)); do
+		kill -0 "$llm_pid" 2>/dev/null ||
+			remote_fail "RKLLM exited before concurrent p2 iteration $index"
+		value=$((1500 + index))
+		if ! output=$("$CLIENT" 2 "$value" 2>&1); then
+			printf '%s\n' "$output" >&2
+			remote_fail "concurrent p2 iteration $index failed"
+		fi
+		printf '%s\n' "$output"
+		grep -q "value=$((value + 1))" <<<"$output" ||
+			remote_fail "concurrent p2 iteration $index returned wrong value"
+		((overlap += 1))
+		sleep 0.1
+	done
+
+	set +e
+	wait "$llm_pid"
+	llm_rc=$?
+	set -e
+	cat "$llm_log"
+	((llm_rc == 0)) || remote_fail "RKLLM exited with status $llm_rc"
+	grep -Fq 'rkllm-runtime version: 1.3.0, rknpu driver version: 0.9.8' \
+		"$llm_log" || remote_fail "unexpected RKLLM/RKNPU version"
+	grep -Fq 'Enabled cpus: [3, 4, 5, 6]' "$llm_log" ||
+		remote_fail "RKLLM did not use the expected Linux CPU mask"
+	grep -Fq 'Enabled cpus num: 4' "$llm_log" ||
+		remote_fail "RKLLM enabled CPU count is not four"
+	grep -Fq 'rkllm init success' "$llm_log" || remote_fail "RKLLM init failed"
+	grep -q 'robot:.' "$llm_log" || remote_fail "RKLLM generated no visible text"
+	if grep -Eq 'matmul\(w8a8\) run failed|rkllm init failed|Mismatch between enabled CPUs' \
+		"$llm_log"; then
+		remote_fail "RKLLM log contains a known failure"
+	fi
+
+	note "post-RKLLM p0 regression"
+	run_client 0 1499
+	assert_all_depths_zero
+	after_msg=$(mailmsg_worker_field msg)
+	after_errors=$(stats_error_total)
+	pending=$(mailmsg_worker_field pending)
+	((overlap == 16)) || remote_fail "only $overlap p2 requests overlapped RKLLM"
+	((after_msg == before_msg + 17)) || remote_fail \
+		"worker processed $((after_msg - before_msg)) messages; expected 17"
+	((after_errors == before_errors)) || remote_fail \
+		"MailMsg error counters changed: $before_errors -> $after_errors"
+	[[ $pending == 0 || $pending == 0x0 ]] ||
+		remote_fail "worker pending bitmap is not empty: $pending"
+	[[ $(mailmsg_state) == active ]] || remote_fail "MailMsg session is no longer active"
+	grep -q 'state=on (0)' "$AMP/affinity_state" || remote_fail "CPU3 is no longer ON"
+	grep -Eq 'a2b_now=m0:0x0( |$)' <<<"$(mailmsg_status)" ||
+		remote_fail "an A2B doorbell remains pending"
+	remote_snapshot
+	pass "RKLLM generation coexisted with 16 p2 requests and post-run p0"
+}
+
 remote_main()
 {
 	local name path timestamp
@@ -766,7 +902,7 @@ remote_main()
 	REPORT=$REMOTE_ROOT/reports/$PROFILE-$timestamp.log
 	exec > >(tee -a "$REPORT") 2>&1
 
-	note "MailMsg V1 revision 6 board profile: $PROFILE"
+	note "MailMsg V1 revision 7 board profile: $PROFILE"
 	printf 'report=%s\n' "$REPORT"
 	for name in "${ARTIFACT_NAMES[@]}"; do
 		path=$REMOTE_ROOT/$name
@@ -795,13 +931,14 @@ remote_main()
 	grep -q 'session=' "$AMP/status" ||
 		remote_fail "running driver lacks the MailMsg V6 session ABI"
 	remote_snapshot
-	pass "V6 kernel/DT/sysfs preflight"
+	pass "R7 kernel/DT/sysfs preflight"
 
 	case $PROFILE in
 	controlled) run_controlled_profile ;;
 	stop-refused) run_stop_refused_profile ;;
 	start-timeout) run_start_timeout_profile ;;
 	stop-timeout) run_stop_timeout_profile ;;
+	llm-coexistence) run_llm_coexistence_profile ;;
 	esac
 
 	note "profile result: PASS"

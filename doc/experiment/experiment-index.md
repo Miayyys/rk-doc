@@ -43,7 +43,7 @@
 - [EXP-20260821-001：构建并静态审计 Zephyr 共享 GIC 心跳候选](exp-20260821-001-build-zephyr-shared-gic-heartbeat.md)
 - [EXP-20260821-002：构建 R1 PSCI 次级核状态预检驱动](exp-20260821-002-build-r1-psci-affinity-preflight.md)
 - [EXP-20260821-003：构建 R1 PSCI CPU_ON 心跳候选](exp-20260821-003-build-r1-psci-cpu-on-heartbeat.md)（进行中）
-- [EXP-20260822-001：构建 R1 Linux-Zephyr 共享内存 PING 原型（含 V4 受控停止、STOP_REFUSED、OFFLINE 生命周期与 R7 事件驱动 worker）](exp-20260822-001-build-r1-amp-shmem-ping.md)（已验证：四 profile RAM-only 功能回归；R7 提交/推送与冻结待完成）
+- [EXP-20260822-001：构建 R1 Linux-Zephyr 共享内存 PING 原型（含 V4 受控停止、STOP_REFUSED、OFFLINE 生命周期、R7 事件驱动 worker 与 RKLLM 共存）](exp-20260822-001-build-r1-amp-shmem-ping.md)（已验证：四 profile 与一次 RKLLM 共存 RAM-only 功能回归；R7 已冻结并推送）
 
 ### 阶段 0：镜像与恢复准备
 

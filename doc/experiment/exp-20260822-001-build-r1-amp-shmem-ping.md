@@ -652,6 +652,16 @@ start-timeout 流程进入 `state=start-timeout`、`session_result=-110`，CPU3 
 
 本次事件时间为 2026-09-01，具体时刻未记录。主仓库源码及现有文档对应 commit 为 `c4267d9`（`mailmsg: add event-driven Zephyr worker`）；嵌套内核 commit 为 `3944bf4a7`，其 format-patch SHA-256 为 `bfe13e0abdff5ef5699e64ad513b7a2b985a2feb8be851acdf4c9e5b773d669c`。R7 冻结目录 `build/local/mailmsg-v1-final-r7/` 已生成 `SHA256SUMS`，16 个文件校验全部通过，随后已执行 `chmod -R a-w`；`freeze-manifest` SHA-256 为 `5395da9deb86ef0fd912b76fa8080ef13dcc91faa3c102dc3a120158cfa8faae`，`SHA256SUMS` SHA-256 为 `6bb781830a94e8148eb37bd88da8ce77df1e7bd0092e7251a9117ffb7c244c54`。目录未包含四 profile 的独立原始串口日志；步骤 57 的验证事实来自主会话确认摘要，不能称为独立原始日志归档。主仓库提交 `c4267d9` 与冻结记录提交 `087d4ef` 已通过 SSH 正常快进推送到 `origin/main`，未使用强推。
 
+### 步骤 59：R7 RKLLM 共存短时功能回归（已验证）
+
+目的与预期结果：在 R7 normal MailMsg session active 时运行 RKLLM，确认 RKLLM 运行期间 p2 及结束后 p0 仍可完成数据面回环；本步骤只验证一次短时功能共存，不覆盖压力、吞吐、延迟隔离、长期稳定或持久化。
+
+本次事件时间为 2026-09-01，主机侧约 15:21；板端报告文件名含 `20231122`，来自错误 RTC，不作为事件时间。fresh R7 FIT 启动初始为 `unarmed`/CPU3 `off`，normal 后为 `active`、session `1/1`；p0 `41` 得 ACK+PONG `42`。运行 RKLLM 时 Runtime `1.3.0`、RKNPU `0.9.8`，Enabled CPUs 为 `[3,4,5,6]`/4，参数为 `64/512`；模型初始化耗时 `13031.29 ms`，实际生成 63 tokens、`7555.13 ms`、`8.34 tok/s`，峰值内存 `1677.23 MB`，自动 profile `PASS`。这些耗时、速率和内存数值仅记录本次输出观察，不构成性能或时延结论。
+
+RKLLM 进程运行期间 p2 16 次 PING/PONG 的值 `1501..1516` 全部成功；结束后 p0 `1499` 得 ACK+PONG `1500`。终态为 active、session `1/1`、CPU3 `on`、`a2b=0`、worker valid，`commit=19`、`irq=18`、`wake=18`、`drain=18`、`msg=18`、pending `0`；p0/p2 双方 depth 均为 `0`，full/incomplete/crc/invalid/stale 均为 `0`。
+
+板端完整报告已按原字节拉回 [llm-coexistence.log](../_assets/mailmsg-r7/llm-coexistence.log)，SHA-256 为 `00daf4738df379324c7620a38ea363163e2dd41be217864e27b483ce5f060111`，大小 `5743 B`；独立 LLM 输出已拉回 [llm-output.log](../_assets/mailmsg-r7/llm-output.log)，SHA-256 为 `6520f7d8a2f6f830f1f507cbf5b3d3fb33a230c08b947cb93a91a5b498321124`，大小 `2181 B`。报告无凭据；附件来源为板端完整报告及其独立输出的原字节回收。该结果仅支持一次 RAM-only 短时功能共存，不表示压力、吞吐/延迟隔离、长期稳定或持久化已验证；normal CPU3 按设计仍保持 on。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -721,6 +731,7 @@ start-timeout 流程进入 `state=start-timeout`、`session_result=-110`，CPU3 
 | R6 里程碑冻结与长期证据附件 | 保存源码身份、五份脱敏报告及其来源/校验关系，不提交大型产物 | 主仓库本地 commit `cdeb93dc3361fd30047cef9d88cd6e35297fd4d1` 已以精确 `force-with-lease` 更新远端 GitHub `origin/main` 至 `6fdcff9bcfa41113d5f1384332fc34f91a488caf`；本地主分支为 `main` 并跟踪 `origin/main`，旧本地 main 为 `main-pre-r6-backup`；内核仓库本地 commit `dcb7dfd7b5f734c8d817920129ca4b794d219c9b` 及 format-patch 仍未远程保存；冻结目录 `build/local/releases/mailmsg-v1-r6-20260831/` 约 77M，manifest/SHA256SUMS 已生成，18 个 artifact/report/patch 校验通过并已只读；五份报告已复制至 `doc/_assets/mailmsg-r6/` | 通过（主仓库发布完成；内核仅本地保存，不提交大型产物） |
 | MailMsg 事件驱动 worker 与四 profile 回归 | ISR→pending bitmap→semaphore→worker 事件驱动链路工作；normal、STOP_REFUSED、controlled STOP、start-timeout、stop-timeout 的 RAM-only 功能路径可回归 | 主机四项构建成功；DTS 槽为 `49152`、四个 bin 尾部补零，resource 回读 DTB/logo 一致并完成外置 FIT RAM 启动；Linux `5.10.252`、7 核，normal 后 `image=49152/49152`、session `1/1`、active、CPU3 on、worker valid；p0 `41→ACK+PONG 42`，四 priority 得 `101/201/301/401`；p3 `800..806` depth7，raw ch3 doorbell 后 PONG `801..807`，worker `irq/wake/drain` +1、`msg` +7、pending 清零；STOP_REFUSED `-125` 后 p0 `500→501`；controlled STOP 在关闭 offline waiter 后 `STOP_READY=6/stop_reply=6/result=0/offline/CPU3 off`，rearm 后 session `2/2`、p0 `700→701` 再 STOP 成功；start/stop-timeout 均 `-110` 且数据面 `ETIMEDOUT` | 通过（四 profile RAM-only 功能回归；不覆盖压力/性能、RKLLM 共存或持久化） |
 | R7 主机提交身份与冻结材料 | 记录源码/内核身份及冻结目录校验，远端发布状态保持准确 | 主仓库/现有文档 commit `c4267d9`；嵌套内核 commit `3944bf4a7`，format-patch SHA-256 `bfe13e0abdff5ef5699e64ad513b7a2b985a2feb8be851acdf4c9e5b773d669c`；`build/local/mailmsg-v1-final-r7/` 的 `SHA256SUMS` 16 个文件全部校验通过并已只读；freeze-manifest SHA-256 `5395da9deb86ef0fd912b76fa8080ef13dcc91faa3c102dc3a120158cfa8faae`，SHA256SUMS SHA-256 `6bb781830a94e8148eb37bd88da8ce77df1e7bd0092e7251a9117ffb7c244c54`；目录无四 profile 独立原始串口日志，验证事实见步骤 57 摘要；提交 `c4267d9` 与 `087d4ef` 已正常推送至 `origin/main` | 通过（本机材料已核对；R7 主仓库已发布） |
+| R7 RKLLM 共存短时功能回归 | normal session active 时，RKLLM 进程运行期间 p2、结束后 p0 仍完成回环且统计无错误 | fresh R7 FIT；p0 `41→ACK+PONG 42`；Runtime `1.3.0`、RKNPU `0.9.8`、CPU `[3,4,5,6]`/4，生成 63 tokens、`8.34 tok/s`；p2 `1501..1516` 全成功，p0 `1499→ACK+PONG 1500`；终态 worker valid、`commit=19/irq=18/wake=18/drain=18/msg=18/pending=0`、p0/p2 depth0、错误计数全0；报告附件见步骤 59 | 通过（一次短时 RAM-only 功能共存；不覆盖压力/性能/长期稳定/持久化） |
 
 ## 结论
 
@@ -776,4 +787,4 @@ start-timeout 流程进入 `state=start-timeout`、`session_result=-110`，CPU3 
 
 补充结论（2026-08-28，RAM-only 硬件验证）：在最终 FIT SHA-256 `f8709830d4411b620f02a1a2d29ec3f08d9f709c61cb22b18e27d93067fd3083` 上 CPU3 已启动。板端状态为 `m0c0=rx:1/0xb2a10000/0x0,tx:1/-16,notify:1/1/1/0`、`a2b_now=m0:0`、`mailmsg_notify=1`；最后通知结果为 `COALESCED`，发送计数 1、合并计数 1、失败计数 0，`-16` 是内核 `EBUSY` 作为观察到的门铃 pending 原因，不是消息入队失败。p0 两次连续请求分别返回 ACK `seq1 peer1 status0`、PONG `seq2 value101`，以及 ACK `seq3 peer2 status0`、PONG `seq4 value201`。该结果限于 mailbox0 ch0：第二条消息合并到既有 A2B pending 门铃且未占 Linux core TX 队列；不等价于高并发或压力测试。
 
-- [ ] 完成 R7 最终父仓库提交/推送与冻结；事件驱动 worker 的 normal、多优先级、7 帧单次唤醒及四 profile RAM-only 功能回归已验证，但不覆盖压力、性能、RKLLM 共存或持久化，不写入 eMMC。
+- [ ] 在 R7 已推送、冻结材料已只读校验的基础上，选择一项并发压力、长期稳定性、吞吐/延迟、大数据、崩溃恢复或 suspend 的 RAM-only 验证；现有四 profile 与一次 RKLLM 共存仅为功能证据，不覆盖上述边界或持久化，不写入 eMMC。
