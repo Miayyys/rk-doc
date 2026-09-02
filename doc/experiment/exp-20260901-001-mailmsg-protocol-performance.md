@@ -154,6 +154,34 @@ window=4 的实际结果如下：
 
 单路与双路均复现 PONG lost，因此在本次诊断中跨 priority 竞争不是必要条件；response ring full 仍是强关联候选，不能写成已证实因果。所有 lost/timeout 仅按现有 benchmark 的 5 秒 drain 定义，未证明响应在 drain 后到达。
 
+### 步骤 6：四优先级同时负载第三次 fresh RAM sweep（未完整通过）
+
+目的与预期结果：进行第 3 次独立 fresh RAM + RKLLM sweep，复核 window=2 的可用观察和 window=4 的 p0/p1 边界。板端 RTC 文件名 `20231122-045819` 仅作为报告文件名，不作为事件时间。
+
+本次事件时间为 2026-09-02。使用 R7 final RAM image，脚本通过 SSH 运行；window=2 的四路 write/PONG/ACK 分别为 p0 `121456/121456/121456`、p1 `121099/121099/121099`、p2 `140553/140553/0`、p3 `139522/139522/0`，均 `timeout/lost=0`、`max_inflight=2`。window=4 的四路结果如下：
+
+| priority | write_ok | PONG | ACK | timeout | lost | max_inflight |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| p0 | 133948 | 133947 | 133948 | 1 | 1 | 4 |
+| p1 | 136023 | 136022 | 136023 | 1 | 1 | 4 |
+| p2 | 186422 | 186422 | 0 | 0 | 0 | 4 |
+| p3 | 179184 | 179184 | 0 | 0 | 0 | 4 |
+
+脚本严格在 p0 失败后停止，window=7 和 post-regression 未执行。报告终态为 CPU3 on、session active、pending/a2b/depth 均为 `0`，Linux input ring `full=0`、notify failed `0`；本轮 session 起始清零的 `mailmsg_tx_full` 为 `count=2`，最后记录 p1/type2/result `-2`。window=4 的 p0/p1 各 1 次 PONG lost 已在 3 次独立 fresh sweep 中复现，不能称偶发；response ring full 仍是关联候选，不是已证实因果。
+
+证据来自本机目录 `build/local/mailmsg-four-priority-sweep-20260902-repeat3/`；原始报告的板端文件名为 `llm-four-priority-sweep-20231122-045819.log`。文件保持原字节：
+
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819.log`（主报告，5142 B），SHA-256 `fd8d30f511ef5e70c64c4564ec77ed92bf63699b027686d541527adc3c685c06`。
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-rkllm.log`（RKLLM，4778 B），SHA-256 `497d2331a1065bb0f7385e795c0988c7043697603d99dfc7dc17126fb9ee2b13`。
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w2-p0.log`（window=2 p0，288 B），SHA-256 `3d97b3ad7119cdc470a198db139934c462f161ec5728e889dcdc1d35ae4d42ba`。
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w2-p1.log`（window=2 p1，288 B），SHA-256 `ffe91ae7832bad04cc952abe6b2bb54e934de1ca42d0d7f0d23d1c24533e61b9`。
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w2-p2.log`（window=2 p2，284 B），SHA-256 `b6aad9c96ff6ceb4881d357d3f0c236b61ff82470cea05159229967d965f17a6`。
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w2-p3.log`（window=2 p3，283 B），SHA-256 `cc0e91020677f215dff76f5021aa72212d5a53608095cf2724957298cd5ec023`。
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w4-p0.log`（window=4 p0，288 B），SHA-256 `70ef5b152f9198b4b2b6f69dc2cad91bc258c235f76cc5c1c195c296afd20a60`。
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w4-p1.log`（window=4 p1，288 B），SHA-256 `af8c01ea7a6055a18eb6e13d0961b888e60c161920930bbb30fe1e18fc0da808`。
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w4-p2.log`（window=4 p2，283 B），SHA-256 `0c6e692b2f0fb7b441284f6d6607bafb8b616e69803fc1756a221206596683ec`。
+- `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w4-p3.log`（window=4 p3，283 B），SHA-256 `5911afeda60cbf40cb22ab83ec68d51e570e681cddc59e55ba1b4e5132ce386c`。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -164,13 +192,14 @@ window=4 的实际结果如下：
 | 四 priority sweep | window=2 完成；window=4 后按规则停止 | window=2 通过；window=4 p0/p1 各 timeout/lost=1，脚本停止；window=7/post 未执行 | 未完整通过 |
 | 四 priority sweep 第二次复现 | fresh RAM 重复 window=2/4，确认前一轮边界 | window=2 通过；window=4 p0/p1 再次各 timeout/lost=1，脚本停止；window=7/post 未执行；response ring 满为待定位关联候选 | 未完整通过 |
 | `window=4` focused 诊断 | 比较 p0 单路、p1 单路及 p0+p1 双路是否均可复现 | p0 单路、p1 单路和双路均各出现 1 次 PONG lost；full 计数分别推进 `2→3`、`3→4`、`4→6` | 已记录，因果待定位 |
+| 四 priority sweep 第三次复现 | fresh RAM 重复 window=2/4 | window=2 四路均无错误或丢失；window=4 p0/p1 再次各 timeout/lost=1，window=7/post 未执行；session 起始清零后 `mailmsg_tx_full count=2` | 未完整通过 |
 | 证据可追溯性 | 保留报告、日志和完整 SHA-256 | 四优先级 6 份、p2 3 份附件均已链接并记录大小/完整 SHA-256 | 通过 |
 
 ## 结论
 
 两组既有结果以及本轮 sweep 均由主会话确认并有本机证据支持。四优先级 `window=1` 仍是已完成的功能/用户态路径观察；p2 stepped profile 的窗口结果保持原记录边界。本轮 sweep 中 window=2 通过，window=4 在 p0/p1 各观察到 1 次 timeout/lost 后按严格规则停止，window=7 与 post-regression 未执行。`mailmsg_tx_full count=2` 只是 response ring 满观察，不能单独证明 p0/p1 lost 的因果根因。
 
-以上数据只描述各自测试工作负载，不能作为 MailMsg 的通用并发上限、公平性/抢占、吞吐或实时性保证，也不能替代长期稳定性、并发 writers、崩溃恢复、大载荷或 eMMC 验证。window=4 已在两次 fresh RAM sweep 中复现 p0/p1 各 1 次 PONG lost；focused 诊断又在 p0 单路、p1 单路和双路复现各 1 次 lost，说明本次观察中跨 priority 竞争不是必要条件。response ring saturation 仍只是强关联的待定位/缓解方向，不是已确定根因；5 秒 drain 外是否有晚到响应未验证。
+以上数据只描述各自测试工作负载，不能作为 MailMsg 的通用并发上限、公平性/抢占、吞吐或实时性保证，也不能替代长期稳定性、并发 writers、崩溃恢复、大载荷或 eMMC 验证。window=4 已在 3 次独立 fresh sweep 中复现 p0/p1 各 1 次 PONG lost，focused 诊断又在 p0 单路、p1 单路和双路复现各 1 次 lost，说明本次观察中跨 priority 竞争不是必要条件；window=2 已 3/3 fresh sweep 通过，但不是数学硬上限。response ring saturation 仍只是强关联的待定位/缓解方向，不是已确定根因；5 秒 drain 外是否有晚到响应未验证。
 
 ## 关联知识与问题
 
@@ -179,4 +208,4 @@ window=4 的实际结果如下：
 
 ## 后续行动
 
-- [ ] 在 fresh RAM 边界下先将安全运行档位暂定为 `window=2`；先定位/缓解已连续两次复现的 window=4 response ring saturation 关联，再考虑 `window=7`，无 LLM 的单独边界可作为可选补充。
+- [ ] 在 fresh RAM 边界下先将安全运行档位暂定为 `window<=2`；先定位/缓解已连续三次复现的 window=4 response ring saturation 关联，再考虑 `window=7`，无 LLM 的单独边界可作为可选补充。

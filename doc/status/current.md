@@ -317,6 +317,8 @@ related:
 
 - **已验证（MailMsg R7 `window=4` focused 诊断，RAM-only 活跃会话）**：2026-09-02 在不重启的现有 active R7 会话中，p0 单路 `write=602854/PONG=602853/ACK=602854/lost=1/timeout=1`，`mailmsg_tx_full` 计数 `2→3`、最后记录 p0/type2/result `-2`；p1 单路 `311815/311814/311815/lost=1/timeout=1`，full `3→4`、最后记录 p1/type2/result `-2`；p0+p1 双路分别为 p0 `379037/379036/379037/lost=1`、p1 `378831/378830/378831/lost=1`，full `4→6`。诊断使用现有 benchmark 的 5 秒 drain，未证明存在晚到响应；单路与双路均可复现，跨优先级竞争不是必要条件。response ring full 仍是强关联候选，不能写成已证实因果；该观察不改变当前先以 `window=2` 为安全运行档位的边界。见[MailMsg 性能实验步骤 5](../experiment/exp-20260901-001-mailmsg-protocol-performance.md)。
 
+- **进行中（MailMsg R7 四优先级同时负载 sweep 第三次 fresh RAM 复现）**：2026-09-02，R7 final RAM image fresh `unarmed/session=0/0` 后，window=2 p0/p1/p2/p3 的 write/PONG/ACK 分别为 `121456/121456/121456`、`121099/121099/121099`、`140553/140553/0`、`139522/139522/0`，均 timeout/lost=0、`max_inflight=2`；window=4 p0 `133948/133947/133948`、p1 `136023/136022/136023`，两路各 timeout/lost=1，p2/p3 `186422/186422/0`、`179184/179184/0` 且无丢失，`max_inflight=4`。严格规则随后停止，window=7/post 未执行；终态 CPU3 on/session active、pending/a2b/depth=0、Linux full=0、notify failed=0，session 起始清零后的 `mailmsg_tx_full count=2` 最后为 p1/type2/result=-2。window=4 p0/p1 已在 3/3 独立 fresh sweep 中复现各 1 次 PONG lost，不能称偶发；window=2 已 3/3 fresh sweep 通过，但不构成数学硬上限。当前暂定安全运行档位为 `window<=2`，先定位/缓解 response ring saturation 关联后再考虑 window=7。完整本机路径、大小和 SHA-256 见[性能实验步骤 6](../experiment/exp-20260901-001-mailmsg-protocol-performance.md)。
+
 ## 当前阻塞与未知信息
 
 - **待确认**：R1 V2 的 PCB 丝印、Type-C 实物接口标签与其具体针脚定义。
