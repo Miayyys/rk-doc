@@ -3,7 +3,7 @@ title: "MailMsg 协议设计说明"
 type: note
 status: draft
 created: 2026-08-27
-updated: 2026-08-31
+updated: 2026-09-02
 tags: [rk3588, amp, ipc, mailmsg, shared-memory]
 aliases: ["MailMsg protocol"]
 related:
@@ -106,6 +106,14 @@ priority 0/1 收到完整且 CRC 正确的帧后发送 ACK；CRC 或其他有效
 
 实现还可以提供发送方向的 TX-full 诊断状态（例如计数、priority、消息类型和错误结果）供观察；这只是报告，不改变入队、通知、重试、重排或丢弃策略。发送端应用仍自行决定后续处置。
 
+## 可靠通道的响应放大边界
+
+源码位置 `src/mailmsg/mailmsg.h:24,129-130`、`src/mailmsg/mailmsg.c:9-32`、`src/zephyr-amp-shmem-ping/src/main.c:321-337,403-420,486-555` 显示，`MAILMSG_RING_SLOTS=8` 表示每个 ring 有 8 个物理 slot，SPSC 环实际可用 7 个。p0/p1 的合法 PING 在 Zephyr worker 中严格先发送 ACK、再发送 PONG；两个反向帧进入同一 priority 的 CPU3→Linux ring。该 ring 满时返回 `-2`，当前 ACK/PONG 调用方只记录 `tx_full`，不自动重试。
+
+因此，在没有并发消费者及时释放 slot 的最坏突发中，可靠 p0/p1 的 `window=4` 会尝试写入 8 个反向帧，第 8 个 PONG 超出 7 个可用 slot；这与既有 3/3 fresh + RKLLM sweep 中 p0/p1 ACK 完整、各少一个 PONG 及 `tx_full` 增量相符。p2/p3 每请求只产生一个 PONG，已有 window=7 无损观察。2026-09-02 在当前 active 会话完成的两轮四 priority `window=3` 诊断均无 loss/timeout/ENOSPC，支持上述结构性边界；并发消费可能暂时提高可观察窗口，但不能提供最坏情况保证。
+
+上述结论是源码审查与受限边界实验共同支持的协议实现边界，不是通用吞吐、实时性或生产安全上限。具体单路/双路与 fresh/RKLLM sweep 仍保留各自实验当时的证据范围；当前下一步是缓解 response ring saturation，再重新评估更高 window。
+
 ## V4 受控停止控制面
 
 V4（共享区 `version=4`）在 p0（`critical`）控制面增加三种消息类型：
@@ -140,7 +148,7 @@ R6 板端分组已覆盖正常握手/四 priority 与统计、通知失败、STA
 
 当前 endpoint 集成的 mailbox0 四通道后端代表路径已完成 RAM-only 板端验证：四个 priority 的正常消息均按其固定策略返回，p0 的 CRC 坏帧返回 NACK 且无 PONG；p0/p1 ACK/NACK、p2 无反馈、p3 正常路径及 queue-full 代表路径，以及 mailbox0 ch0 的 `COALESCED` 也已有相应实验记录。V4 受控停止 p0 控制面另有代表路径验证。主机 endpoint/protocol/notify/mailbox0 测试和完整 ARM64 Image 构建已通过。上述结果证明代表路径的协议语义，不等于完整产品验证。
 
-尚未由这些实验覆盖的范围包括：并发压力、高负载、长期稳定性、吞吐/延迟、大载荷、崩溃恢复、suspend、更广泛的通道组合、eMMC 持久化、通知异常的压力边界和自动重传。p3 满队列与 p0 跨 priority 隔离已有代表路径证据，但不替代上述范围的验证；详细镜像、校验值、命令输出及逐次排障过程保留在[共享内存 PING 实验记录](../experiment/exp-20260822-001-build-r1-amp-shmem-ping.md)中。
+尚未由这些实验覆盖的范围包括：并发生产者/消费者的完整压力、高负载的长期稳定性、吞吐/延迟保证、大载荷、崩溃恢复、suspend、更广泛的通道组合、eMMC 持久化、通知异常的压力边界和自动重传。window=3 的两轮当前 active 会话诊断不替代 fresh/RKLLM 或生产负载验证；p3 满队列与 p0 跨 priority 隔离已有代表路径证据，但不替代上述范围的验证；详细镜像、校验值、命令输出及逐次排障过程保留在[共享内存 PING 实验记录](../experiment/exp-20260822-001-build-r1-amp-shmem-ping.md)中。
 
 ## 参考决策
 

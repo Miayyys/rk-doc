@@ -182,6 +182,33 @@ window=4 的实际结果如下：
 - `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w4-p2.log`（window=4 p2，283 B），SHA-256 `0c6e692b2f0fb7b441284f6d6607bafb8b616e69803fc1756a221206596683ec`。
 - `build/local/mailmsg-four-priority-sweep-20260902-repeat3/llm-four-priority-sweep-20231122-045819-four-p-w4-p3.log`（window=4 p3，283 B），SHA-256 `5911afeda60cbf40cb22ab83ec68d51e570e681cddc59e55ba1b4e5132ce386c`。
 
+### 步骤 7：四优先级同时负载 `window=3` 边界诊断（已验证，范围受限）
+
+目的与预期结果：在同一 active RAM-only 会话中，以四 priority、`window=3`、8 秒的短时负载观察可靠通道是否仍能在每个请求的 ACK/PONG 成对响应下保持无丢失；本步骤不使用 RKLLM，也不是 fresh 会话或生产安全上限测试。
+
+事件时间为 2026-09-02；板端为 R7 active session，具体启动时间未记录。Arch 主机通过四个并行 SSH 分别在板端执行既有 benchmark；四条实际命令分别为：
+
+```text
+/userdata/mailmsg-v1-r7/mailmsg-window-bench-aarch64 0 3 8 7000000
+/userdata/mailmsg-v1-r7/mailmsg-window-bench-aarch64 1 3 8 8000000
+/userdata/mailmsg-v1-r7/mailmsg-window-bench-aarch64 2 3 8 9000000
+/userdata/mailmsg-v1-r7/mailmsg-window-bench-aarch64 3 3 8 10000000
+```
+
+四路分别对应 priority/base，目的为在 `window=3` 下观察四 priority 的并行收发。测试前后读取 status，测试后读取 `mailmsg_stats`，再将板端 `reports/window3-boundary-20260902/p0..p3.log` 原字节 scp 至本机 `build/local/mailmsg-window3-boundary-20260902/`。主会话确认连续两轮诊断均为零丢失、零 timeout、零 ENOSPC，`max_inflight=3`。保存证据的一轮结果为：p0 write/PONG/ACK=`202205/202205/202205`，p1=`209929/209929/209929`，p2 write/PONG=`277185/277185`，p3=`252403/252403`；post 各方向 depth 为 `0`。前后状态中的 `mailmsg_tx_full` 均为 `valid=1/commit=3/count=2/priority=1/type=2/result=-2`，本轮未新增。
+
+该轮仅使用当前 active 会话且不含 RKLLM；因此不能写成 fresh/RKLLM 回归、生产安全上限、吞吐/延迟保证或并发消费者保证。源码审查（`src/mailmsg/mailmsg.h:24,129-130`、`src/mailmsg/mailmsg.c:9-32`、`src/zephyr-amp-shmem-ping/src/main.c:321-337,403-420,486-555`）确认 `MAILMSG_RING_SLOTS=8`、实际可用 7；p0/p1 对每个合法 PING 严格先写 ACK、再写 PONG，二者进入同一 priority 的反向 ring，FULL 返回 `-2` 且当前调用方只记录 `tx_full`、不重试。于是无并发消费的可靠通道最坏突发 `window=4` 需要 8 个反向帧，第 8 个 PONG 超出 7 槽；p2/p3 每请求一个 PONG，已有 window=7 无损观察。结合本步骤两轮 window=3 均无损，确认既有 window=4 p0/p1 各少一个 PONG 的结构性响应放大边界；并发消费可能暂时提高可观察窗口，但不提供最坏情况保证。
+
+证据文件保持原字节，大小和 SHA-256 如下：
+
+- `build/local/mailmsg-window3-boundary-20260902/p0.log`（287 B），SHA-256 `32962048c16f59ef935c7a1dae0cf9be8841e748e53f349f854f8da0a544706c`。
+- `build/local/mailmsg-window3-boundary-20260902/p1.log`（287 B），SHA-256 `3323a02cac0cece20c99047c71c553807ddc72eacf3a39863791c218fa51bcff`。
+- `build/local/mailmsg-window3-boundary-20260902/p2.log`（281 B），SHA-256 `c25d0ab2e5eb654fff18c13a498256678d296a5fe3f775a83840e1143d75a88f`。
+- `build/local/mailmsg-window3-boundary-20260902/p3.log`（281 B），SHA-256 `eb3f80754eac564030bd32a80b62c86756d7c1304de9d676b31544ac51e6f44f`。
+- `build/local/mailmsg-window3-boundary-20260902/post.stats`（437 B），SHA-256 `b4c80a9b66f791cc0c65a5f0ee77a00713d1d9f54fe33f6a5e2ee5ff5450bfda`。
+- `build/local/mailmsg-window3-boundary-20260902/post.status`（794 B），SHA-256 `3810c1815d44df1ef3f187492880ff5e489d87b9c4a6612dbfb9f5a7ca02aeb7`。
+- `build/local/mailmsg-window3-boundary-20260902/pre.status`（796 B），SHA-256 `52000602eee31da9c2732a05af8b008d4aeca09d8b7cb09e5bdcf6fafef89919`。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -193,13 +220,14 @@ window=4 的实际结果如下：
 | 四 priority sweep 第二次复现 | fresh RAM 重复 window=2/4，确认前一轮边界 | window=2 通过；window=4 p0/p1 再次各 timeout/lost=1，脚本停止；window=7/post 未执行；response ring 满为待定位关联候选 | 未完整通过 |
 | `window=4` focused 诊断 | 比较 p0 单路、p1 单路及 p0+p1 双路是否均可复现 | p0 单路、p1 单路和双路均各出现 1 次 PONG lost；full 计数分别推进 `2→3`、`3→4`、`4→6` | 已记录，因果待定位 |
 | 四 priority sweep 第三次复现 | fresh RAM 重复 window=2/4 | window=2 四路均无错误或丢失；window=4 p0/p1 再次各 timeout/lost=1，window=7/post 未执行；session 起始清零后 `mailmsg_tx_full count=2` | 未完整通过 |
-| 证据可追溯性 | 保留报告、日志和完整 SHA-256 | 四优先级 6 份、p2 3 份附件均已链接并记录大小/完整 SHA-256 | 通过 |
+| 四 priority `window=3` 两轮边界诊断 | 当前 active 会话下观察四 priority 无损 window=3 | 两轮均 zero loss/timeout/ENOSPC、`max_inflight=3`；保存一轮 p0/p1 ACK+PONG 完整，p2/p3 PONG 完整；`tx_full` 未新增 | 通过（受限工作负载） |
+| 证据可追溯性 | 保留报告、日志和完整 SHA-256 | 四优先级 6 份、p2 3 份及 window=3 诊断 7 份本机证据均记录大小/完整 SHA-256 | 通过 |
 
 ## 结论
 
-两组既有结果以及本轮 sweep 均由主会话确认并有本机证据支持。四优先级 `window=1` 仍是已完成的功能/用户态路径观察；p2 stepped profile 的窗口结果保持原记录边界。本轮 sweep 中 window=2 通过，window=4 在 p0/p1 各观察到 1 次 timeout/lost 后按严格规则停止，window=7 与 post-regression 未执行。`mailmsg_tx_full count=2` 只是 response ring 满观察，不能单独证明 p0/p1 lost 的因果根因。
+两组既有结果以及本轮 sweep 均由主会话确认并有本机证据支持。四优先级 `window=1` 仍是已完成的功能/用户态路径观察；p2 stepped profile 的窗口结果保持原记录边界。本轮 sweep 中 window=2 通过，window=4 在 p0/p1 各观察到 1 次 timeout/lost 后按严格规则停止，window=7 与 post-regression 未执行。步骤 7 的两轮 `window=3` 在当前 active 会话均无丢失，且源码明确给出可靠通道的 ACK/PONG 响应放大边界：7 个可用反向 slot 对每请求两个响应时，`window=4` 的第 8 个响应为结构性 FULL；p2/p3 每请求一个响应，已有 window=7 无损观察。旧步骤中的 `tx_full` 只作为当时的运行时观察；结合源码和本次边界实验后，p0/p1 各少一个 PONG 的结构性原因已确认，不再只是候选。
 
-以上数据只描述各自测试工作负载，不能作为 MailMsg 的通用并发上限、公平性/抢占、吞吐或实时性保证，也不能替代长期稳定性、并发 writers、崩溃恢复、大载荷或 eMMC 验证。window=4 已在 3 次独立 fresh sweep 中复现 p0/p1 各 1 次 PONG lost，focused 诊断又在 p0 单路、p1 单路和双路复现各 1 次 lost，说明本次观察中跨 priority 竞争不是必要条件；window=2 已 3/3 fresh sweep 通过，但不是数学硬上限。response ring saturation 仍只是强关联的待定位/缓解方向，不是已确定根因；5 秒 drain 外是否有晚到响应未验证。
+以上数据只描述各自测试工作负载，不能作为 MailMsg 的通用并发上限、公平性/抢占、吞吐或实时性保证，也不能替代长期稳定性、并发 writers、崩溃恢复、大载荷或 eMMC 验证。window=4 已在 3 次独立 fresh sweep 中复现 p0/p1 各 1 次 PONG lost，focused 诊断又在 p0 单路、p1 单路和双路复现各 1 次 lost，说明本次观察中跨 priority 竞争不是必要条件；步骤 7 的两轮当前 active 会话 window=3 均无损。window=2 已 3/3 fresh sweep 通过，但不是数学硬上限。源码与步骤 7 已确认 response ring saturation 是可靠通道 ACK/PONG 响应放大的结构性边界；这不等于已经完成缓解，也不把它扩展为并发消费者、吞吐、实时性或生产安全上限结论。5 秒 drain 外是否有晚到响应未验证。
 
 ## 关联知识与问题
 
@@ -208,4 +236,4 @@ window=4 的实际结果如下：
 
 ## 后续行动
 
-- [ ] 在 fresh RAM 边界下先将安全运行档位暂定为 `window<=2`；先定位/缓解已连续三次复现的 window=4 response ring saturation 关联，再考虑 `window=7`，无 LLM 的单独边界可作为可选补充。
+- [ ] 在 fresh RAM 边界下先将安全运行档位暂定为 `window<=2`；定位并缓解已由源码与边界实验确认的 window=4 response ring saturation 结构性边界后，再考虑 `window=7`，并继续区分并发消费对观察窗口的暂时影响与最坏情况保证。
