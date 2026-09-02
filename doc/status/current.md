@@ -315,6 +315,8 @@ related:
 | systemd 整体服务状态 | 进行中 | 更新后仍为 `degraded`，当前只剩 `rockchip.service` 失败；须重新确认直接失败命令，见 [ISSUE-20260810-001](../issue/issue-20260810-001-systemd-degraded-failed-units.md) |
 | 备份或确认可恢复方案 | 部分完成 | 完整 eMMC 在线备份已导出、长度匹配且校验文件回归成功；厂商固件、恢复入口和写回流程仍待确认 |
 
+- **已验证（MailMsg R7 `window=4` focused 诊断，RAM-only 活跃会话）**：2026-09-02 在不重启的现有 active R7 会话中，p0 单路 `write=602854/PONG=602853/ACK=602854/lost=1/timeout=1`，`mailmsg_tx_full` 计数 `2→3`、最后记录 p0/type2/result `-2`；p1 单路 `311815/311814/311815/lost=1/timeout=1`，full `3→4`、最后记录 p1/type2/result `-2`；p0+p1 双路分别为 p0 `379037/379036/379037/lost=1`、p1 `378831/378830/378831/lost=1`，full `4→6`。诊断使用现有 benchmark 的 5 秒 drain，未证明存在晚到响应；单路与双路均可复现，跨优先级竞争不是必要条件。response ring full 仍是强关联候选，不能写成已证实因果；该观察不改变当前先以 `window=2` 为安全运行档位的边界。见[MailMsg 性能实验步骤 5](../experiment/exp-20260901-001-mailmsg-protocol-performance.md)。
+
 ## 当前阻塞与未知信息
 
 - **待确认**：R1 V2 的 PCB 丝印、Type-C 实物接口标签与其具体针脚定义。
@@ -444,4 +446,4 @@ Zephyr EL2→EL1 路径已完成主机审计，检查点候选不修复运行逻
 
 主机已将显式四核掩码源码以 R1 原生 `g++` 重建为新文件 `llm_demo-amp`，未覆盖旧 `llm_demo-r1`。在同一心跳实例中，RKLLM 明确枚举 `[3, 4, 5, 6]`、初始化成功并生成 `Alright,`；心跳同时从 `HB|0x323` 递增到 `HB|0x32b`，均为 EL1。这已验证 Linux 侧 RKNPU 实际 LLM 与 CPU3 Zephyr 持续心跳的最小共存。仍不代表长时稳定性、实时性、双向 IPC 或外设负载已验证。
 
-唯一下一步：在 fresh RAM 边界下先将安全运行档位暂定为 `window=2`；由于 window=4 已连续两次复现 p0/p1 各 1 次 PONG 丢失，先定位/缓解 response ring saturation 关联后再考虑 `window=7`，无 LLM 的单独边界可作为可选补充；不宣称根因已确定。
+唯一下一步：在 fresh RAM 边界下先将安全运行档位暂定为 `window=2`；由于 window=4 已连续两次复现 p0/p1 各 1 次 PONG 丢失，且 focused 单路/双路诊断仍复现该边界，先定位/缓解 response ring saturation 关联后再考虑 `window=7`，无 LLM 的单独边界可作为可选补充；不宣称根因已确定。

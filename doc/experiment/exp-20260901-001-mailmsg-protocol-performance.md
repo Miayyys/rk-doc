@@ -146,6 +146,14 @@ window=4 的实际结果如下：
 - `build/local/mailmsg-four-priority-sweep-20260902/llm-four-priority-sweep-20231122-050608-four-p-w4-p2.log`（window=4 p2，283 B），SHA-256 `84e7f80ef6f968b64fa07ec3d364ec2cde8baf6d759d2b5fa44222d1cef655fa`。
 - `build/local/mailmsg-four-priority-sweep-20260902/llm-four-priority-sweep-20231122-050608-four-p-w4-p3.log`（window=4 p3，283 B），SHA-256 `845b4b7c0c9a1c174934df6d265b6441cefd996ad85be707188258be9ea03842`。
 
+### 步骤 5：现有 active 会话的 `window=4` focused 诊断（已记录，边界仍待定位）
+
+目的与预期结果：在不重启的现有 active R7 会话中，用现有 benchmark 的 5 秒 drain 分别运行 p0 单路、p1 单路和 p0+p1 双路，观察 PONG 丢失是否只在跨 priority 竞争时出现。该诊断不证明晚到响应，也不把 response ring full 作为已证实根因。
+
+实际结果：p0 单路 `write=602854/PONG=602853/ACK=602854/lost=1/timeout=1`，`mailmsg_tx_full` 计数 `2→3`，最后记录 p0/type2/result `-2`；p1 单路 `write=311815/PONG=311814/ACK=311815/lost=1/timeout=1`，full `3→4`，最后记录 p1/type2/result `-2`。p0+p1 双路分别为 p0 `write=379037/PONG=379036/ACK=379037/lost=1`、p1 `write=378831/PONG=378830/ACK=378831/lost=1`，full `4→6`。
+
+单路与双路均复现 PONG lost，因此在本次诊断中跨 priority 竞争不是必要条件；response ring full 仍是强关联候选，不能写成已证实因果。所有 lost/timeout 仅按现有 benchmark 的 5 秒 drain 定义，未证明响应在 drain 后到达。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -155,13 +163,14 @@ window=4 的实际结果如下：
 | p2 stepped window | 记录不同窗口的回收和错误 | `1/2/4/7` lost=0；`8/16/32` lost=`1/9/25`；输入 ENOSPC 原报告序列 `0/0/0/33/224` | 通过（本工作负载观察） |
 | 四 priority sweep | window=2 完成；window=4 后按规则停止 | window=2 通过；window=4 p0/p1 各 timeout/lost=1，脚本停止；window=7/post 未执行 | 未完整通过 |
 | 四 priority sweep 第二次复现 | fresh RAM 重复 window=2/4，确认前一轮边界 | window=2 通过；window=4 p0/p1 再次各 timeout/lost=1，脚本停止；window=7/post 未执行；response ring 满为待定位关联候选 | 未完整通过 |
+| `window=4` focused 诊断 | 比较 p0 单路、p1 单路及 p0+p1 双路是否均可复现 | p0 单路、p1 单路和双路均各出现 1 次 PONG lost；full 计数分别推进 `2→3`、`3→4`、`4→6` | 已记录，因果待定位 |
 | 证据可追溯性 | 保留报告、日志和完整 SHA-256 | 四优先级 6 份、p2 3 份附件均已链接并记录大小/完整 SHA-256 | 通过 |
 
 ## 结论
 
 两组既有结果以及本轮 sweep 均由主会话确认并有本机证据支持。四优先级 `window=1` 仍是已完成的功能/用户态路径观察；p2 stepped profile 的窗口结果保持原记录边界。本轮 sweep 中 window=2 通过，window=4 在 p0/p1 各观察到 1 次 timeout/lost 后按严格规则停止，window=7 与 post-regression 未执行。`mailmsg_tx_full count=2` 只是 response ring 满观察，不能单独证明 p0/p1 lost 的因果根因。
 
-以上数据只描述各自测试工作负载，不能作为 MailMsg 的通用并发上限、公平性/抢占、吞吐或实时性保证，也不能替代长期稳定性、并发 writers、崩溃恢复、大载荷或 eMMC 验证。window=4 已在两次 fresh RAM sweep 中复现 p0/p1 各 1 次 PONG lost，但 response ring saturation 仍只是待定位/缓解方向，不是已确定根因。
+以上数据只描述各自测试工作负载，不能作为 MailMsg 的通用并发上限、公平性/抢占、吞吐或实时性保证，也不能替代长期稳定性、并发 writers、崩溃恢复、大载荷或 eMMC 验证。window=4 已在两次 fresh RAM sweep 中复现 p0/p1 各 1 次 PONG lost；focused 诊断又在 p0 单路、p1 单路和双路复现各 1 次 lost，说明本次观察中跨 priority 竞争不是必要条件。response ring saturation 仍只是强关联的待定位/缓解方向，不是已确定根因；5 秒 drain 外是否有晚到响应未验证。
 
 ## 关联知识与问题
 
