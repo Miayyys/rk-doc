@@ -43,6 +43,7 @@ Profiles (one fresh RAM boot per terminal profile):
   llm-soak       24 RKLLM generations plus sustained round-robin p0-p3 traffic.
   llm-p2-window  RKLLM generation plus stepped p2 in-flight windows 1..32.
   llm-four-priority  RKLLM generation plus simultaneous p0-p3 window=1 traffic.
+  llm-four-priority-sweep  RKLLM generation plus simultaneous p0-p3 windows 2/4/7.
 
 Host environment overrides: R1_HOST, R1_USER, R1_IDENTITY,
 MAILMSG_REMOTE_ROOT, RKLLM_DEMO_ROOT.  Uploads only to /userdata; never writes
@@ -125,7 +126,7 @@ while (($#)); do
 done
 
 case ${PROFILE:-none} in
-	none|controlled|stop-refused|stop-timeout|start-timeout|llm-coexistence|llm-soak|llm-p2-window|llm-four-priority) ;;
+	none|controlled|stop-refused|stop-timeout|start-timeout|llm-coexistence|llm-soak|llm-p2-window|llm-four-priority|llm-four-priority-sweep) ;;
 	*) fail "unknown profile: $PROFILE"; exit 2 ;;
 esac
 
@@ -1367,17 +1368,26 @@ run_llm_four_priority_profile()
 	local model=$LLM_ROOT/models/DeepSeek-R1-Distill-Qwen-1.5B_W8A8_RK3588.rkllm
 	local llm_log=${REPORT%.log}-rkllm.log
 	local bench_prefix=${REPORT%.log}-four-p
-	local rounds=24 timeout_seconds=300 duration=8 window=1
+	local rounds=24 timeout_seconds=300 duration=8 window stage window_list
 	local llm_pid llm_rc=0 priority bench_rc base bench_log summary
 	local write_count pong_count ack_count lost_count timeout_count
 	local enospc_count eagain_count write_other_count nack_count
 	local duplicate_count unknown_count max_inflight
 	local before_msg after_msg expected_msg before_errors after_errors pending
-	local total_write=0
+	local stage_before_msg stage_after_msg stage_before_errors stage_after_errors
+	local stage_write total_write=0
+	local generate_count robot_count
 	local -a bench_pids=() bench_rcs=() bench_logs=()
-	local -a before_full=(0 0 0 0) after_full=(0 0 0 0)
+	local -a stage_before_full=(0 0 0 0) after_full=(0 0 0 0)
 	local -a write_counts=(0 0 0 0) pong_counts=(0 0 0 0)
 	local -a ack_counts=(0 0 0 0)
+	local -a windows=(1)
+
+	if [[ $PROFILE == llm-four-priority-sweep ]]; then
+		windows=(2 4 7)
+	fi
+	printf -v window_list '%s,' "${windows[@]}"
+	window_list=${window_list%,}
 
 	[[ -x $llm_bin ]] || remote_fail "RKLLM demo is not executable: $llm_bin"
 	[[ -r $model ]] || remote_fail "RKLLM model is not readable: $model"
@@ -1393,13 +1403,8 @@ run_llm_four_priority_profile()
 	assert_all_depths_zero
 	before_msg=$(mailmsg_worker_field msg)
 	before_errors=$(stats_protocol_error_total)
-	for priority in 0 1 2 3; do
-		before_full[$priority]=$(priority_full_count "$priority")
-		[[ ${before_full[$priority]} =~ ^[0-9]+$ ]] ||
-			remote_fail "cannot parse baseline p$priority full count"
-	done
 
-	note "starting $rounds RKLLM generations and simultaneous p0-p3 window=$window traffic"
+	note "starting $rounds RKLLM generations and simultaneous p0-p3 windows=$window_list traffic"
 	(
 		for ((priority = 0; priority < rounds; priority++)); do
 			printf '0\n'
@@ -1426,72 +1431,125 @@ run_llm_four_priority_profile()
 	}
 
 	# Each process owns one priority-scoped reader.  The four independent
-	# processes overlap for the full eight-second measurement window; this is
-	# a coexistence test, not a scheduler fairness measurement.
-	for priority in 0 1 2 3; do
-		bench_log=${bench_prefix}${priority}.log
-		bench_logs[$priority]=$bench_log
-		base=$((1000000 + priority * 1000000))
-		note "launching p$priority window=$window duration=${duration}s"
-		timeout "$((duration + 10))" "$WINDOW_BENCH" \
-			"$priority" "$window" "$duration" "$base" >"$bench_log" 2>&1 &
-		bench_pids[$priority]=$!
-		FOUR_PRIORITY_BENCH_PIDS[$priority]=${bench_pids[$priority]}
-	done
+	# processes overlap for each eight-second measurement window; this is a
+	# coexistence/load test, not a scheduler fairness measurement.
+	for stage in "${!windows[@]}"; do
+		window=${windows[$stage]}
+		kill -0 "$llm_pid" 2>/dev/null ||
+			remote_fail "RKLLM exited before simultaneous window $window"
+		assert_all_depths_zero
+		stage_before_msg=$(mailmsg_worker_field msg)
+		stage_before_errors=$(stats_protocol_error_total)
+		for priority in 0 1 2 3; do
+			stage_before_full[$priority]=$(priority_full_count "$priority")
+			[[ ${stage_before_full[$priority]} =~ ^[0-9]+$ ]] ||
+				remote_fail "cannot parse window $window p$priority full baseline"
+		done
+		stage_write=0
+		bench_pids=()
+		bench_rcs=()
+		bench_logs=()
+		FOUR_PRIORITY_BENCH_PIDS=()
 
-	for priority in 0 1 2 3; do
-		if wait "${bench_pids[$priority]}"; then
-			bench_rc=0
-		else
-			bench_rc=$?
-		fi
-		bench_rcs[$priority]=$bench_rc
-	done
+		note "launching four priorities window=$window duration=${duration}s"
+		for priority in 0 1 2 3; do
+			bench_log=${bench_prefix}-w${window}-p${priority}.log
+			bench_logs[$priority]=$bench_log
+			base=$((stage * 100000000 + priority * 1000000 + 1000000))
+			timeout "$((duration + 10))" "$WINDOW_BENCH" \
+				"$priority" "$window" "$duration" "$base" >"$bench_log" 2>&1 &
+			bench_pids[$priority]=$!
+			FOUR_PRIORITY_BENCH_PIDS[$priority]=${bench_pids[$priority]}
+		done
 
-	for priority in 0 1 2 3; do
-		bench_log=${bench_logs[$priority]}
-		printf '\n--- p%d benchmark ---\n' "$priority"
-		cat "$bench_log"
-		((bench_rcs[$priority] == 0)) ||
-			remote_fail "p$priority simultaneous benchmark exited ${bench_rcs[$priority]}"
-		summary=$(grep -E "^priority=$priority " "$bench_log" | tail -n 1 || true)
-		[[ -n $summary ]] || remote_fail "p$priority benchmark has no summary"
-		write_count=$(benchmark_summary_field "$summary" write_ok)
-		pong_count=$(benchmark_summary_field "$summary" pong)
-		ack_count=$(benchmark_summary_field "$summary" ack)
-		lost_count=$(benchmark_summary_field "$summary" lost)
-		timeout_count=$(benchmark_summary_field "$summary" timeout)
-		enospc_count=$(benchmark_summary_field "$summary" enospc)
-		eagain_count=$(benchmark_summary_field "$summary" eagain)
-		write_other_count=$(benchmark_summary_field "$summary" write_other)
-		nack_count=$(benchmark_summary_field "$summary" nack)
-		duplicate_count=$(benchmark_summary_field "$summary" duplicate)
-		unknown_count=$(benchmark_summary_field "$summary" unknown)
-		max_inflight=$(benchmark_summary_field "$summary" max_inflight)
-		[[ $write_count =~ ^[0-9]+$ && $pong_count =~ ^[0-9]+$ &&
-		   $ack_count =~ ^[0-9]+$ && $lost_count =~ ^[0-9]+$ &&
-		   $timeout_count =~ ^[0-9]+$ && $enospc_count =~ ^[0-9]+$ &&
-		   $eagain_count =~ ^[0-9]+$ && $write_other_count =~ ^[0-9]+$ &&
-		   $nack_count =~ ^[0-9]+$ && $duplicate_count =~ ^[0-9]+$ &&
-		   $unknown_count =~ ^[0-9]+$ && $max_inflight =~ ^[0-9]+$ ]] ||
-			remote_fail "cannot parse p$priority simultaneous summary"
-		((write_count > 0 && pong_count == write_count &&
-		  lost_count == 0 && timeout_count == 0 && enospc_count == 0 &&
-		  eagain_count == 0 && write_other_count == 0 && nack_count == 0 &&
-		  duplicate_count == 0 && unknown_count == 0 &&
-		  max_inflight <= window)) ||
-			remote_fail "p$priority simultaneous window lost or malformed a frame"
-		if ((priority <= 1)); then
-			((ack_count == write_count)) ||
-				remote_fail "reliable p$priority ACK count $ack_count != $write_count"
-		else
-			((ack_count == 0)) ||
-				remote_fail "unreliable p$priority unexpectedly returned ACKs"
-		fi
-		write_counts[$priority]=$write_count
-		pong_counts[$priority]=$pong_count
-		ack_counts[$priority]=$ack_count
-		total_write=$((total_write + write_count))
+		for priority in 0 1 2 3; do
+			if wait "${bench_pids[$priority]}"; then
+				bench_rc=0
+			else
+				bench_rc=$?
+			fi
+			bench_rcs[$priority]=$bench_rc
+		done
+
+		for priority in 0 1 2 3; do
+			bench_log=${bench_logs[$priority]}
+			printf '\n--- window=%d p%d benchmark ---\n' "$window" "$priority"
+			cat "$bench_log"
+			((bench_rcs[$priority] == 0)) ||
+				remote_fail "window $window p$priority benchmark exited ${bench_rcs[$priority]}"
+			summary=$(grep -E "^priority=$priority " "$bench_log" | tail -n 1 || true)
+			[[ -n $summary ]] ||
+				remote_fail "window $window p$priority benchmark has no summary"
+			write_count=$(benchmark_summary_field "$summary" write_ok)
+			pong_count=$(benchmark_summary_field "$summary" pong)
+			ack_count=$(benchmark_summary_field "$summary" ack)
+			lost_count=$(benchmark_summary_field "$summary" lost)
+			timeout_count=$(benchmark_summary_field "$summary" timeout)
+			enospc_count=$(benchmark_summary_field "$summary" enospc)
+			eagain_count=$(benchmark_summary_field "$summary" eagain)
+			write_other_count=$(benchmark_summary_field "$summary" write_other)
+			nack_count=$(benchmark_summary_field "$summary" nack)
+			duplicate_count=$(benchmark_summary_field "$summary" duplicate)
+			unknown_count=$(benchmark_summary_field "$summary" unknown)
+			max_inflight=$(benchmark_summary_field "$summary" max_inflight)
+			[[ $write_count =~ ^[0-9]+$ && $pong_count =~ ^[0-9]+$ &&
+			   $ack_count =~ ^[0-9]+$ && $lost_count =~ ^[0-9]+$ &&
+			   $timeout_count =~ ^[0-9]+$ && $enospc_count =~ ^[0-9]+$ &&
+			   $eagain_count =~ ^[0-9]+$ && $write_other_count =~ ^[0-9]+$ &&
+			   $nack_count =~ ^[0-9]+$ && $duplicate_count =~ ^[0-9]+$ &&
+			   $unknown_count =~ ^[0-9]+$ && $max_inflight =~ ^[0-9]+$ ]] ||
+				remote_fail "cannot parse window $window p$priority summary"
+			((write_count > 0 && pong_count == write_count &&
+			  lost_count == 0 && timeout_count == 0 && enospc_count == 0 &&
+			  eagain_count == 0 && write_other_count == 0 && nack_count == 0 &&
+			  duplicate_count == 0 && unknown_count == 0 &&
+			  max_inflight <= window)) ||
+				remote_fail "window $window p$priority lost or malformed a frame"
+			if ((priority <= 1)); then
+				((ack_count == write_count)) ||
+					remote_fail "reliable window $window p$priority ACK count $ack_count != $write_count"
+			else
+				((ack_count == 0)) ||
+					remote_fail "unreliable window $window p$priority unexpectedly returned ACKs"
+			fi
+			write_counts[$priority]=$((write_counts[$priority] + write_count))
+			pong_counts[$priority]=$((pong_counts[$priority] + pong_count))
+			ack_counts[$priority]=$((ack_counts[$priority] + ack_count))
+			stage_write=$((stage_write + write_count))
+		done
+		FOUR_PRIORITY_BENCH_PIDS=()
+
+		wait_worker_idle_at "$((stage_before_msg + stage_write))"
+		stage_after_msg=$(mailmsg_worker_field msg)
+		stage_after_errors=$(stats_protocol_error_total)
+		pending=$(mailmsg_worker_field pending)
+		((stage_after_msg == stage_before_msg + stage_write)) ||
+			remote_fail "window $window worker msg=$stage_after_msg, expected $((stage_before_msg + stage_write))"
+		((stage_after_errors == stage_before_errors)) ||
+			remote_fail "window $window protocol errors changed: $stage_before_errors -> $stage_after_errors"
+		[[ $pending == 0 || $pending == 0x0 ]] ||
+			remote_fail "window $window worker pending bitmap is not empty: $pending"
+		for priority in 0 1 2 3; do
+			after_full[$priority]=$(priority_full_count "$priority")
+			[[ ${after_full[$priority]} =~ ^[0-9]+$ ]] ||
+				remote_fail "cannot parse window $window p$priority full counter"
+			((after_full[$priority] == stage_before_full[$priority])) ||
+				remote_fail "window $window p$priority full counter changed"
+		done
+		[[ $(mailmsg_state) == active ]] ||
+			remote_fail "MailMsg session ended after window $window"
+		grep -q 'state=on (0)' "$AMP/affinity_state" ||
+			remote_fail "CPU3 is no longer ON after window $window"
+		grep -Eq 'a2b_now=m0:0x0( |$)' <<<"$(mailmsg_status)" ||
+			remote_fail "window $window left an A2B doorbell pending"
+		assert_all_depths_zero
+		total_write=$((total_write + stage_write))
+		printf 'window_stage=%d write_ok=%d p0=%d/%d/%d p1=%d/%d/%d p2=%d/%d/%d p3=%d/%d/%d\n' \
+			"$window" "$stage_write" \
+			"${write_counts[0]}" "${ack_counts[0]}" "${pong_counts[0]}" \
+			"${write_counts[1]}" "${ack_counts[1]}" "${pong_counts[1]}" \
+			"${write_counts[2]}" "${ack_counts[2]}" "${pong_counts[2]}" \
+			"${write_counts[3]}" "${ack_counts[3]}" "${pong_counts[3]}"
 	done
 
 	if wait "$llm_pid"; then
@@ -1524,18 +1582,6 @@ run_llm_four_priority_profile()
 	((robot_count >= rounds)) || remote_fail \
 		"observed $robot_count robot prompts; expected at least $rounds"
 
-	wait_worker_idle_at "$((before_msg + total_write))"
-	after_msg=$(mailmsg_worker_field msg)
-	for priority in 0 1 2 3; do
-		after_full[$priority]=$(priority_full_count "$priority")
-		[[ ${after_full[$priority]} =~ ^[0-9]+$ ]] ||
-			remote_fail "cannot parse final p$priority full count"
-		((after_full[$priority] == before_full[$priority])) ||
-			remote_fail "p$priority full counter changed during simultaneous window"
-	done
-	((after_msg == before_msg + total_write)) || remote_fail \
-		"worker msg=$after_msg, expected $((before_msg + total_write)) from four benchmarks"
-
 	note "post-window four-priority regression"
 	run_four_priorities
 	expected_msg=$((before_msg + total_write + 4))
@@ -1556,15 +1602,15 @@ run_llm_four_priority_profile()
 		remote_fail "an A2B doorbell remains pending"
 	assert_all_depths_zero
 
-	printf 'rkllm_generations=%d simultaneous_window=%d total_write_ok=%d p0_write_ok=%d p0_ack=%d p0_pong=%d p1_write_ok=%d p1_ack=%d p1_pong=%d p2_write_ok=%d p2_ack=%d p2_pong=%d p3_write_ok=%d p3_ack=%d p3_pong=%d\n' \
-		"$generate_count" "$window" "$total_write" \
+	printf 'rkllm_generations=%d simultaneous_windows=%s total_write_ok=%d p0_write_ok=%d p0_ack=%d p0_pong=%d p1_write_ok=%d p1_ack=%d p1_pong=%d p2_write_ok=%d p2_ack=%d p2_pong=%d p3_write_ok=%d p3_ack=%d p3_pong=%d\n' \
+		"$generate_count" "$window_list" "$total_write" \
 		"${write_counts[0]}" "${ack_counts[0]}" "${pong_counts[0]}" \
 		"${write_counts[1]}" "${ack_counts[1]}" "${pong_counts[1]}" \
 		"${write_counts[2]}" "${ack_counts[2]}" "${pong_counts[2]}" \
 		"${write_counts[3]}" "${ack_counts[3]}" "${pong_counts[3]}"
 	free -h
 	remote_snapshot
-	pass "four priorities ran simultaneously at window=$window during RKLLM generation"
+	pass "four priorities ran simultaneously at windows=$window_list during RKLLM generation"
 }
 
 remote_main()
@@ -1619,7 +1665,7 @@ remote_main()
 	llm-coexistence) run_llm_coexistence_profile ;;
 	llm-soak) run_llm_soak_profile ;;
 	llm-p2-window) run_llm_p2_window_profile ;;
-	llm-four-priority) run_llm_four_priority_profile ;;
+	llm-four-priority|llm-four-priority-sweep) run_llm_four_priority_profile ;;
 	esac
 
 	note "profile result: PASS"
