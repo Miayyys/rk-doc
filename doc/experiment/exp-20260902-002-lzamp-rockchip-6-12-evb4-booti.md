@@ -177,6 +177,22 @@ U-Boot 明确加载 `/userdata/lzamp/linux-6.12-repro/Image`，板端核对 SHA-
 
 结论：本步骤验证 R7 候选 p3 写入后的默认启动和基础设备自动加载/就绪，并保留此前偶发 systemd early hang 的已知未解决风险；不宣称彻底稳定。
 
+### 步骤 17：默认 eMMC 6.12 上 R7、Qwen3.5 与 MailMsg 组合回归（已验证，代表路径）
+
+目的与预期结果：在步骤 16 的默认 eMMC 启动系统中，验证 R7 normal Zephyr、Qwen3.5 RKLLM 服务和用户态 MailMsg Agent 的一次组合闭环；不扩展为压力、长期稳定性或产品级服务结论。
+
+实际结果和退出码：默认启动系统为 Linux `6.12.69-lzamp+`；R7 normal Zephyr 已启动，CPU3 affinity 为 `on`、MailMsg 为 `active`、session=`1/1`。直接客户端 p0 value `41` 得到 ACK `seq2/peer1` 和 PONG `seq3/value42`，错误统计为 `0`。后台 Qwen3.5-0.8B 服务初始化成功，target `rk3588-r7`、Enabled CPUs `[3,4,5,6]`、Runtime `1.3.0`、RKNPU `0.9.8`；`mailmsg_agent` chat smoke 返回 `READY`。native tool prompt 选择 `zephyr_increment(41)`，经 p1、`window=1` 得到 result `42`，ACK `seq4/peer2`、PONG `seq5`，exit `0`。终态仍为 active/session=`1/1`、CPU3 on，worker `irq/wake/drain/msg=2`、pending=`0`，priority1 相关 `crc/invalid/stale=0`；筛选日志未见新增 IOMMU fault、SError 或 job timeout，仅有已知 RKNPU 启动期 MMIO `EBUSY` 警告。
+
+结论：默认 eMMC 6.12 路径已完成一次 R7 normal→Qwen3.5→MailMsg→Zephyr 的组合代表回归；不据此宣称长期稳定、压力能力、性能边界或完整产品服务已验证。
+
+### 步骤 18：`lzamp-runtime` 用户态启动器最小回归（部分验证）
+
+目的与预期结果：验证显式用户态启动器对 Zephyr、MailMsg 和 RKLLM 服务的基本生命周期编排；启动器不注册 systemd、不设置开机自启，且不把一次 smoke 扩展为长期服务管理结论。
+
+实际结果和退出码：新增 `LZAMP/scripts/lzamp-runtime` 支持 `start`、`status`、`smoke`、`stop` 及 `stop --with-zephyr`；主机 `make -C LZAMP test` 的 15 项 Python 测试通过，`bash -n` 通过。脚本上传至板端 `/userdata/lzamp/bin/lzamp-runtime` 后，`status` 显示 Linux `6.12.69-lzamp+`、CPU3 on、MailMsg active/session=`1/1`、RKLLM pid/API ready。幂等 `start` 返回 `zephyr=already-active/rkllm=already-ready`；`smoke` 返回 `READY` 与 `zephyr_increment 41=>42`。普通 `stop` 成功停止 RKLLM 而 Zephyr 保持 active；随后 `start` 复用 Zephyr，并在 attempt3 重启 RKLLM API，之后再次 `41=>42` 成功，最终仍为 active/session=`1/1`、API ready。
+
+结论：显式启动器的基本 status、幂等 start、smoke 及仅停 RKLLM 的 stop 代表路径已验证；`stop --with-zephyr`、开机自动化和长稳仍待验证。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -209,6 +225,7 @@ U-Boot 明确加载 `/userdata/lzamp/linux-6.12-repro/Image`，板端核对 SHA-
 | 原始 p3 备份回退入口 | U-Boot `mmc 0:8` RAM 启动原始备份并恢复可达网络 | 67108864 B、SHA-256 `e983740d4df29d51fa58dea9d504d536b87c8b205935ec2ceb8d64e679cd833b`；进入 Linux `5.10.110`，`eth0` IPv4 正常 | 通过（已验证回退启动入口） |
 | R7 候选写入 eMMC p3 | 写前有备份，写后整分区回读一致 | `/dev/mmcblk0p3`（label `boot`，64 MiB）写入 64 MiB 镜像，`16+0 records`、`67108864 bytes`、`conv=fsync`；回读 SHA-256 `b7c672d0d07df75b5721e1831ac3bd199cd2e3af5b209df7d7c2e34f2099d08f`，其他分区/环境未改 | 通过（首次固化；非长期稳定性验证） |
 | R7 默认重启 | 不手动加载时进入 6.12 LZAMP 并恢复基础设备 | 默认重启进入 `6.12.69-lzamp+`、7 核；`eth0` IPv4、MT7922 自动 `mt7921e`、`wlP4p65s0`/`p2p0`、`hci0` UP/RUNNING、AMP/mailbox/RKNPU 基础节点均出现；扫描发现 `Loser` | 通过（一次默认启动；保留早期停滞风险） |
+| `lzamp-runtime` 用户态启动器 | 显式编排 Zephyr/RKLLM 的 status、start、smoke、stop | 主机 15 项 Python 测试与 `bash -n` 通过；板端上传后 status/幂等 start/smoke/普通 stop 及再次 `41=>42` 通过，Zephyr 保持 active | 部分通过（`--with-zephyr`、开机自动化、长稳待验证） |
 | R1 板级兼容 | R1 专用功能与外设保持正确 | 正式 LZAMP DTB 已完成 RAM-only 启动，但 R1 完整兼容性、其余 AMP/MailMsg 生命周期、RKLLM、无线、显示仍未验证 | 未确定 |
 
 ## 结论

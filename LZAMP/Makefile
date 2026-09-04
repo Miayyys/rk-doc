@@ -12,15 +12,18 @@ LINUX_6_12_SRC ?= $(CURDIR)/third_party/linux-rockchip
 LINUX_6_12_OUT ?= $(CURDIR)/build/linux-rockchip-6.12
 LINUX_JOBS ?= $(shell nproc)
 
-.PHONY: all test agent-test board-tools linux-6.12-prepare linux-6.12-configure linux-6.12-verify-source linux-6.12-build clean
+.PHONY: all test agent-test runtime-check board-tools linux-6.12-prepare linux-6.12-configure linux-6.12-verify-source linux-6.12-build clean
 
 all: test
 
-test: $(TEST_BINS) agent-test
+test: $(TEST_BINS) agent-test runtime-check
 	@set -e; for test_bin in $(TEST_BINS); do ./$$test_bin; done
 
 agent-test:
 	python3 -m unittest discover -s agent/tests -p 'test_*.py'
+
+runtime-check:
+	bash -n scripts/lzamp-runtime
 
 board-tools: $(BOARD_TOOL_BINS)
 

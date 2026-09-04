@@ -11,8 +11,9 @@ The current Rockchip develop-6.12 target is pinned in
 manifests/sources.lock.yaml. Its core path has passed RAM-only validation:
 Linux boots with seven cores, Zephyr owns A55 CPU3, four MailMsg priorities
 work, controlled stop/rearm reaches a second session, and RKNPU/RKLLM can call
-a Zephyr tool through MailMsg. Persistent boot and full board peripherals are
-not yet validated.
+a Zephyr tool through MailMsg. The 6.12 R7 FIT is installed in the eMMC boot
+partition and has completed one default-boot regression; an intermittent early
+userspace boot stall and full board peripheral coverage remain open risks.
 
 ## Layout
 
@@ -21,6 +22,7 @@ not yet validated.
 - linux/patches: reproducible 5.10 and 6.12 integration patches
 - tests: host unit tests and board-side lifecycle tests
 - tools: Linux userspace clients and benchmarks
+- scripts/lzamp-runtime: explicit Zephyr and RKLLM lifecycle launcher
 - validation/r7: frozen R7 metadata and hashes; large binaries are not tracked
 - third_party: ignored upstream source checkouts
 - build: ignored generated output
@@ -60,6 +62,23 @@ enumeration, RKNPU/RKLLM inference, CPU3 start/stop/rearm, a second MailMsg
 session, and a minimal four-priority regression. Ethernet, Wi-Fi association,
 full peripheral coverage, long-duration stress, and persistent eMMC
 installation remain separate promotion gates.
+
+## Board runtime launcher
+
+Install `scripts/lzamp-runtime` on the board and run it explicitly as root. It
+does not register a systemd service or enable boot-time startup.
+
+```sh
+lzamp-runtime start
+lzamp-runtime status
+lzamp-runtime smoke
+lzamp-runtime stop
+lzamp-runtime stop --with-zephyr
+```
+
+Plain `stop` leaves Zephyr running. The `--with-zephyr` form requests the
+MailMsg controlled-stop path after stopping RKLLM. Paths can be overridden by
+the environment variables declared at the top of the script.
 
 Files retain their own SPDX identifiers where present. A full provenance and
 license review is required before publishing the repository.
