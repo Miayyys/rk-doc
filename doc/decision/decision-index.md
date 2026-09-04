@@ -13,3 +13,4 @@
 - [DEC-20260826-001：选择 mailbox0 四通道作为 AMP 通知层](dec-20260826-001-select-mailbox0-notification-layer.md)
 - [DEC-20260827-001：将 AMP 主协议正式命名为 MailMsg](dec-20260827-001-name-mailmsg-amp-protocol.md)
 - [DEC-20260828-001：定义 MailMsg V3 按优先级固定可靠策略](dec-20260828-001-define-mailmsg-priority-reliability.md)
+- [DEC-20260902-001：建立 LZAMP 作为后续工程根目录并迁移至 develop-6.12](dec-20260902-001-establish-lzamp-engineering-root.md)

@@ -1,0 +1,45 @@
+/dts-v1/;
+/ {
+	description = "R1 MailMsg event-driven worker 48 KiB slot candidate (RAM boot only)";
+	#address-cells = <1>;
+	images {
+		fdt {
+			description = "R1 AMP DTS with 48 KiB Zephyr image slot";
+			data = /incbin/("rk3588s-yyt-amp.dtb");
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+			load = <0xffffff00>;
+			hash { algo = "sha256"; };
+		};
+		kernel {
+			description = "Rockchip 5.10 MailMsg event-worker diagnostics";
+			data = /incbin/("Image");
+			type = "kernel";
+			arch = "arm64";
+			os = "linux";
+			compression = "none";
+			load = <0xffffff01>;
+			entry = <0xffffff01>;
+			hash { algo = "sha256"; };
+		};
+		resource {
+			description = "R1 resource with matching 48 KiB-slot AMP DTS";
+			data = /incbin/("mailmsg-event-worker-resource.img");
+			type = "multi";
+			arch = "arm64";
+			compression = "none";
+			hash { algo = "sha256"; };
+		};
+	};
+	configurations {
+		default = "conf";
+		conf {
+			description = "MailMsg event-driven worker 48 KiB RAM-only validation";
+			kernel = "kernel";
+			fdt = "fdt";
+			multi = "resource";
+			rollback-index = <0>;
+		};
+	};
+};

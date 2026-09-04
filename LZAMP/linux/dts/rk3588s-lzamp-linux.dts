@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Minimal Linux bring-up device tree for the LZAMP RK3588S platform.
+ *
+ * Start from Rockchip's RK3588S EVB4 LP4X description and keep only the
+ * board differences already confirmed by RAM-only boot tests.  Additional
+ * LZAMP peripherals are intentionally left for separate validation steps.
+ */
+
+/dts-v1/;
+
+#include "rk3588s-evb4-lp4x.dtsi"
+#include "rk3588-linux.dtsi"
+
+/ {
+	model = "LZAMP RK3588S";
+	compatible = "lzamp,rk3588s", "rockchip,rk3588";
+
+	amp-cpu-on-heartbeat {
+		compatible = "lzamp,amp-mailmsg";
+		memory-region = <&zephyr_reserved>;
+		mbox-names = "m0ch0", "m0ch1", "m0ch2", "m0ch3";
+		mboxes = <&mailbox0 0>, <&mailbox0 1>,
+			 <&mailbox0 2>, <&mailbox0 3>;
+		target-mpidr = /bits/ 64 <0x300>;
+		zephyr-entry = /bits/ 64 <0x5000100c>;
+		zephyr-image-size = <0xc000>;
+		status-offset = <0xff000>;
+		status = "okay";
+	};
+
+	cpus {
+		cpu-map {
+			cluster0 {
+				/delete-node/ core3;
+			};
+		};
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		zephyr_reserved: zephyr@50000000 {
+			reg = <0x0 0x50000000 0x0 0x00100000>;
+			no-map;
+		};
+	};
+};
+
+&arm_pmu {
+	interrupt-affinity = <&cpu_l0>, <&cpu_l1>, <&cpu_l2>,
+			     <&cpu_b0>, <&cpu_b1>, <&cpu_b2>, <&cpu_b3>;
+};
+
+/delete-node/ &cpu_l3;
+
+&mailbox0 {
+	status = "okay";
+};
+
+/*
+ * The EVB4 routes its FUSB302 and RTC through I2C8.  The target hardware's
+ * 5.10 board description routes those devices through I2C6 instead; probing
+ * the EVB4 FUSB302 location causes continuous address 0x22 timeouts.
+ * Keep this controller disabled until the I2C6 wiring is ported.
+ */
+&i2c8 {
+	status = "disabled";
+};
+
+/*
+ * The target eMMC is stable in HS400 enhanced-strobe mode without CQE.
+ * Enabling the EVB4 CQE property causes repeated recovery and read errors.
+ */
+&sdhci {
+	/delete-property/ supports-cqe;
+};
+
+/* No endpoint is fitted on the PCIe 2.0 lane 1 path. */
+&pcie2x1l1 {
+	status = "disabled";
+};
+
+/*
+ * The M.2 slot containing the MT7922 is PCI domain 4 (pcie2x1l2).
+ * Its PERST# is wired to GPIO4 PA7 on the target hardware, not GPIO4 PC1
+ * as on the EVB4 reference board.
+ */
+&pcie2x1l2 {
+	reset-gpios = <&gpio4 RK_PA7 GPIO_ACTIVE_HIGH>;
+	vpcie3v3-supply = <&vcc3v3_pcie20>;
+	status = "okay";
+};

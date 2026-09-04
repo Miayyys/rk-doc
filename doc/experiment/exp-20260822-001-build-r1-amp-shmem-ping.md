@@ -3,7 +3,7 @@ title: "EXP-20260822-001 构建 R1 Linux-Zephyr 共享内存 PING 原型"
 type: experiment
 status: verified
 created: 2026-08-22
-updated: 2026-09-01
+updated: 2026-09-03
 tags: [rk3588, amp, zephyr, shared-memory, cache, psci]
 related:
   - "[[experiment/exp-20260821-003-build-r1-psci-cpu-on-heartbeat]]"
@@ -711,6 +711,60 @@ window=1 四路同时运行 8 秒：p0 write/pong/ack=`97339/97339/97339`，p1=`
 
 结论：在本次 `window=1` 四优先级同时负载与 24 次 RKLLM Generate 中，四路均完成 8 秒功能回归，最终队列、通知、错误和 pending 观察均归零；该证据仅支持本工作负载下的同时共存功能，不构成四路并发上限、公平性、吞吐/实时性或长期稳定性保证。
 
+### 步骤 63：R7 远程安全状态与 eMMC 固化决策（RAM-only）
+
+目的与预期结果：在用户离开、后续只能远程操作的条件下，确认冻结 R7 文件经 userdata 传输后仍可安全执行一次 RAM-only 基线回归；记录暂不首次固化 eMMC `p3` 的恢复边界，不把单次状态字段误作 CPU 生命周期结论。
+
+本次事件时间为 2026-09-03，具体时刻未记录。板端此前运行旧 Linux `5.10`，主机经 SSH 将冻结目录中的 R7 FIT/normal bin 传至 `/userdata/mailmsg-v1-r7`，板端与主机 SHA-256 对照一致。随后使用 RAM-only 启动路径加载 R7 normal image：Linux 为 `5.10.252`、`nproc=7`，`eth0` 为 `10.42.0.193/24`，SSH 连接成功；加载 `49152` B normal Zephyr 后，MailMsg 为 `state=active`、session `1/1`、`cpu_on_ret=0`，p0 请求 `41` 返回 ACK 与 PONG `value=42`。
+
+该次状态输出还包含 `affinity=off`；它只是该次字段观测，不能单独解释为 CPU3 未运行，因为 `SESSION_READY`、session `1/1` 及 ACK/PONG 已直接证明本次通信路径成功。用户离开前决定不把 R7 首次固化到 eMMC `p3`，不执行 `saveenv`；R7 仍仅作 RAM-only 验证，持久启动与故障恢复尚未演练，p3 保持原状。
+
+结论：本步骤确认冻结 R7 的 userdata 传输、RAM-only 启动和远程 SSH/p0 代表路径可用，并记录了暂不持久化的安全决策；不构成 eMMC 固化、持久启动或恢复流程验证。
+
+### 步骤 64：LZAMP 用户态 MailMsg Agent 最小闭环（部分验证）
+
+目的与预期结果：记录 LZAMP 用户态 Agent 测试服务的最小协议闭环，确认它只接受白名单内的 `zephyr_increment` 请求，并按 p1 reliable、`window=1` 校验严格 JSON、超时以及 ACK+PONG；不把测试服务当作实际外设或 LLM 决策层。
+
+本次事件时间为 2026-09-03，具体时刻未记录。主机新增 `LZAMP/agent/mailmsg_agent.py` 并通过 7 项主机测试；测试服务固定使用 p1 reliable、`window=1`，仅允许 `zephyr_increment`，执行参数白名单、严格 JSON、超时和 ACK+PONG 校验。脚本 SHA-256 在主机与板端一致，为 `a2aaa4d56cd83933440972ebeb52eb7c25f53bb620c3bcb76e64bcdc30085374`；脚本上传至板端 `/userdata/lzamp/agent/mailmsg_agent.py`。
+
+板端最小闭环中，固定决策 `41` 返回 `ok=true/result=42`，并观察到 `ack_sequence=4`、`ack_peer_sequence=2`、`pong_sequence=5`。该结果仅验证测试服务和一次 `+1` MailMsg 闭环；不代表实际外设控制、RKLLM/LLM 决策或更广泛业务语义已验证。
+
+结论：用户态 Agent 的主机测试与板端最小 `zephyr_increment` 代表路径部分通过；参数、超时和 JSON 边界之外的服务行为，以及实际应用集成仍未验证。
+
+### 步骤 65：用户态 Agent 策略内联修正与 RKLLM 模型路由边界（部分验证）
+
+目的与预期结果：在步骤 64 的最小闭环基础上，验证严格白名单 Agent 的策略注入修正，并区分 Agent 解析问题与当前 RKLLM 模型/模板的工具路由能力；不放宽白名单，也不把测试服务当作实际外设或 LLM 决策层。
+
+本次事件时间为 2026-09-03，具体时刻未记录。`LZAMP/agent/mailmsg_agent.py` 的主机测试由此前 7 项增至 9 项并全部通过；Agent 仍只允许 `zephyr_increment`，固定 p1 reliable、`window=1`，只接受纯 JSON 或单一 `tool_call`，并校验参数白名单、超时及 ACK+PONG。官方 RKLLM Flask server 的非 native-tools 路径只把最后的 user/tool 内容传给 runtime，system prompt 不进入模型；实现已改为把完整策略内联到唯一 user 消息，相关实现见[Agent 源码](../../LZAMP/agent/mailmsg_agent.py#L273-L285)。当前脚本主机/板端 SHA-256 均为 `ffcc51cc4008d19ff3a0588f1d01ced171297e1b439d68a34c389a31dc8a62b0`，已上传至 `/userdata/lzamp/agent/mailmsg_agent.py`。
+
+板端固定 decision `41` 的 Agent 请求仍实测返回 `ok=true/result=42`；观测到 `ack_sequence=4`、`ack_peer_sequence=2`、`pong_sequence=5`。这些结果仅证明测试服务的 `+1` 闭环和协议校验路径。只读模型测试中，标准提示、英文逐字提示、中文仅 JSON 提示及普通算术提示的返回内容均为 `Okay`（长度 `4`），且未访问 MailMsg。暂停 Flask 后以已验证 `llm_demo-amp` 直接提问 `2+3`，实际只输出 `First,`，未正确回答；这说明问题不只来自 Agent parser，但不能据此指定模型或模板的唯一原因。Flask 随后恢复，PID `389504`；日志确认 Runtime `1.3.0`、driver `0.9.8`、CPU `[3,4,5,6]`/4、`init success`。
+
+资料中的官方本地 README 将 Function Calling 示例面向 Qwen3，并提示 Qwen3-0.6B 的参数可靠性较弱；本次使用的 DeepSeek-R1-Distill-Qwen-1.5B 模型/模板在当前测试范围内不适合可靠工具路由。白名单和严格解析保持不变；Qwen3-1.7B 兼容模型作为下一步待验证对象，尚未下载。
+
+结论：Agent 策略内联修正、9 项主机测试和板端最小 `zephyr_increment` 闭环部分通过；当前模型/模板的工具路由能力仍不足以作为可靠决策依据。该步骤不验证实际外设控制、LLM 业务决策、Qwen3-1.7B 兼容性或更广泛应用集成。
+
+### 步骤 66：Agent validate-only/chat-smoke 与 Qwen3.5 候选准备（部分验证）
+
+目的与预期结果：验证 Agent 的只读模型决策路径与纯文本 smoke 路径不会执行工具或访问 MailMsg，并记录下一候选模型的资料与下载边界；继续保持 `zephyr_increment` 白名单和严格解析。
+
+本次事件时间为 2026-09-03，具体时刻未记录。`LZAMP/agent/mailmsg_agent.py` 新增 `--validate-only`：模型输出经严格 `parse_decision` 后仅返回 `{"ok":true,"executed":false,"decision":...}`，不调用 `execute_zephyr_increment`、不打开 MailMsg；随后加入 `--chat-smoke`（纯文本非空 smoke，不解析或执行工具、不访问 MailMsg）并重构通用 `request_model_content`。当前主机 `make -C LZAMP test` 通过 13 项，`git diff --check` 通过；最终主机/板端 SHA-256 均为 `86097e3169964c87d2ab64c7b9e88f10fcf0109d1b2ea78627270e885590ef1c`，脚本已同步板端。此前 Flask 恢复后的 PID 应以 `398492` 为准；日志确认 Runtime `1.3.0`、driver `0.9.8`、CPU `[3,4,5,6]`/4、`init success`。
+
+板端现有 DeepSeek 服务执行 `--chat-smoke '请只回答：就绪' --api-timeout 120` 返回 `ok=true/executed=false`，但 response 是一段解释性中文而非严格的“就绪”；这只验证 API 纯文本路径非空，未触发 MailMsg，并再次说明当前模型不服从严格输出。此前固定 decision `41` 的 validate-only 结果仍属于该测试服务的只读验证，未重启 RKLLM、未发送 MailMsg，不改变这一模型边界。
+
+官方 `rknn-llm` v1.3.0 资料新增 Qwen3.5；官方模型仓候选为 `Qwen3.5-0.8B_w8a8_rk3588.rkllm`。Downloads 文件与 `LZAMP/models` 副本大小均为 `1299987628` B，`cmp` 返回 `0`；主机实测 MD5 为 `e2c78250c17ba2ad08566e7c097e87dc`，SHA-256 为 `1745e49f09c275294ed39e8ab2aae54beb2e1d192f6db105996aec9b385ef338`，`file` 识别为 `data`。官方 metadata 的 hash 字段为 `6aade1d736a2ed0627741895468dd970`，算法未声明，不能称为 MD5。模型尚未经过 RKLLM runtime/板端验证。Function Calling server 示例面向 Qwen3 series，但未明确点名 Qwen3.5，因此兼容性仍待板测。
+
+结论：Agent 的只读 validate-only 与 chat-smoke 主机路径部分通过，固定 decision 的 validate-only 与板端 chat-smoke 均未触碰 MailMsg；Qwen3.5 已完成主机副本一致性及哈希核验，但尚未经过 runtime/板端验证，当前模型严格输出和 Qwen3.5 兼容性仍待确认。该步骤不证明模型可靠工具路由、实际外设控制或 LLM 业务决策已解决。
+
+### 步骤 67：Qwen3.5 native tool 到 MailMsg/Zephyr 的最小闭环（部分验证）
+
+目的与预期结果：在严格白名单、p1 reliable、`window=1` 和 native tool 解析约束下，验证 Qwen3.5 能否驱动一次 `zephyr_increment` 测试服务闭环；不把一次成功扩展为高并发、长期稳定或生产服务验证。
+
+本次事件时间为 2026-09-03，具体时刻未记录。此前两个不完整分片已删除：`LZAMP/models/Qwen3.5-0.8B_w8a8_rk3588.failed-hash-assumption.partial`（`159789056` B）和 `LZAMP/models/Qwen3.5-0.8B_w8a8_rk3588.resume-unsupported.partial`（`211771392` B）；Downloads 中的完整源文件保留。完整模型大小为 `1299987628` B，主机与板端 `/userdata/lzamp/models/Qwen3.5-0.8B_w8a8_rk3588.rkllm` `cmp`/SHA-256 一致，SHA-256 为 `1745e49f09c275294ed39e8ab2aae54beb2e1d192f6db105996aec9b385ef338`。该模型在板端以 RKLLM `1.3.0`、RKNPU `0.9.8` 初始化成功，CPU 为 `[3,4,5,6]`，服务监听 `127.0.0.1:8080`。
+
+原生响应格式实测为严格 Qwen XML-like 结构：`<tool_call><function=zephyr_increment><parameter=value>41...</...>`；主机解析器扩展后 `make -C LZAMP test` 通过 15 项。板端 Agent native prompt 使用 value `41`，经 MailMsg priority 1、`window=1` 得到 ACK/PONG，Zephyr result 为 `42`、exit `0`；transport 为 `priority=1 window=1 ack_sequence=6 ack_peer_sequence=3 pong_sequence=7`，状态 `m0c1 rx=2 tx=2`、session active、CPU3 on。
+
+一次主机误跑因路径不适用返回 `ENOENT`，随后按正确板端路径完成上述回归；该排障事实不改变协议结果。结论：首次 Qwen3.5→MailMsg→Zephyr native tool 最小闭环已部分验证；仍不证明高并发、长期稳定、生产服务管理或实际外设/LLM 业务决策可靠。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -784,6 +838,10 @@ window=1 四路同时运行 8 秒：p0 write/pong/ack=`97339/97339/97339`，p1=`
 | R7 RKLLM llm-soak 单生产者回归 | 约 3 分钟、24 轮真实 Generate 全完成；单串行 producer 轮询 p0–p3，终态四 priority depth/错误归零 | `robot=24`、RKLLM exit `0`，总 Generate `168089.61 ms`、共 `1535` tokens；p0/p1/p2/p3 请求 `159/159/159/158` 共 `635`，最终 active/session `1/1`、CPU3 on、a2b/pending `0`、worker `commit=640/irq=639/wake=639/drain=639/msg=639`、full/incomplete/crc/invalid/stale 全 `0`；三份原始附件及完整 SHA 见步骤 60 | 通过（一次约 3 分钟 RAM-only 单生产者功能 soak；不覆盖长期/并发/性能上界/持久化） |
 | R7 direct-doorbell p2 并发窗口与 RKLLM 回归 | direct-doorbell 路径不被 generic mailbox TX queue `ENOBUFS` 阻塞；窗口 1/2/4/7 无损，窗口 8/16/32 记录丢失与 reverse full 对照，最终四优先级回归通过 | 窗口 1/2/4/7 丢失 `0`，窗口 8/16/32 丢失 `1/9/25`，reverse full delta 同为 `1/9/25`；p2 输入 ENOSPC `0/0/0/33/224`；24 次 RKLLM Generate，accepted `2616267`、PONG `2616232`、lost/timeout `35`、ENOSPC `257`；最终 active/session `1/1`、CPU3 on、a2b/pending `0`、全 depth `0`、worker `commit=1010802/irq=2616166/wake=1010801/drain=1010776/msg=2616271`；证据附件与完整 SHA 见步骤 61 | 通过（本工作负载下的 p2 并发窗口功能回归；不构成通用硬上限或性能承诺） |
 | R7 四优先级同时负载与 RKLLM window=1 回归 | 四 priority 同时运行 8 秒，四路 write/PONG/ACK（按可靠级别）完整，24 次 RKLLM Generate 完成且 post 回归通过 | p0 `97339/97339/97339`、p1 `98177/98177/98177`、p2 `110227/110227/0`、p3 `106192/106192/0`；总 write `411935`，四路 ENOSPC/EAGAIN/lost/timeout/protocol errors 全 `0`，max_inflight `1`；worker msg `411939`、pending/a2b/depth `0`、full/incomplete/crc/invalid/stale `0`，notify 均 `SENT`；证据附件与完整 SHA 见步骤 62 | 通过（仅本工作负载下 window=1 同时功能；不构成并发上限、公平性或长期性能保证） |
+| R7 远程安全状态与 eMMC 固化决策 | 冻结 R7 文件经 userdata 传输后可 RAM-only 启动并完成远程代表回归；不首次写入 eMMC p3 | 板端/主机 SHA-256 对照一致；Linux `5.10.252`、`nproc=7`、`eth0=10.42.0.193/24`、SSH 成功；加载 `49152` B normal Zephyr 后 `active/session=1/1/cpu_on_ret=0`，p0 `41` 得 ACK/PONG `42`；`affinity=off` 仅为单次状态字段观测，不覆盖直接通信证据；未写 p3、未执行 `saveenv` | 通过（RAM-only/远程安全范围；不验证持久启动或恢复） |
+| LZAMP 用户态 Agent 与 RKLLM 工具路由边界 | 严格白名单 Agent 经策略内联后保持协议闭环；当前模型/模板应能可靠产生唯一工具调用 | 9 项主机测试通过；脚本 SHA-256 `ffcc51cc4008d19ff3a0588f1d01ced171297e1b439d68a34c389a31dc8a62b0`；板端 decision `41→42`、ACK/PONG 序号符合预期；四类只读模型提示均返回 `Okay`，直接 `llm_demo-amp` 询问 `2+3` 仅输出 `First,`；Flask 已恢复且 Runtime/driver/CPU/init 日志正常 | 部分通过（Agent/协议校验通过；当前模型/模板不适合作为可靠工具路由；Qwen3-1.7B 待验证） |
+| LZAMP Agent validate-only/chat-smoke 与 Qwen3.5 候选 | 只读模型决策应返回结构化结果但不执行工具；纯文本 smoke 应非空；候选模型应完成主机校验后再板测 | 当前 `--validate-only`/`--chat-smoke` 主机测试 13 项通过，主机/板端 SHA-256 `86097e3169964c87d2ab64c7b9e88f10fcf0109d1b2ea78627270e885590ef1c`；板端 chat-smoke 返回 `ok=true/executed=false` 及非空解释性中文，但未严格服从“只回答：就绪”，未访问 MailMsg；Qwen3.5 文件与 `LZAMP/models` 副本均为 `1299987628` B、`cmp_exit=0`，主机 MD5 `e2c78250c17ba2ad08566e7c097e87dc`、SHA-256 `1745e49f09c275294ed39e8ab2aae54beb2e1d192f6db105996aec9b385ef338`，官方 metadata hash `6aade1d736a2ed0627741895468dd970` 算法未知；尚未上传或板测 | 部分通过（只读路径和主机模型核验通过；当前模型严格输出及 Qwen3.5 runtime/Function Calling 兼容性待验证） |
+| Qwen3.5 native tool→MailMsg→Zephyr 最小闭环 | native tool 响应经严格解析后，以 p1 reliable/window=1 执行一次 `zephyr_increment(41)` 并得到 ACK/PONG/result42 | 完整模型主机/板端 SHA-256 `1745e49f09c275294ed39e8ab2aae54beb2e1d192f6db105996aec9b385ef338` 一致；板端 RKLLM 1.3.0/RKNPU 0.9.8 init success、CPU `[3,4,5,6]`、服务 `127.0.0.1:8080`；15 项主机测试通过；native prompt `41` 得 ACK/PONG、result `42`、exit `0`，`priority=1 window=1 ack_sequence=6 ack_peer_sequence=3 pong_sequence=7`，`m0c1 rx=2 tx=2`、session active、CPU3 on | 部分通过（首次功能闭环；不覆盖高并发、长期稳定或生产服务） |
 
 ## 结论
 

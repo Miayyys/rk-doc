@@ -1,0 +1,16 @@
+2944cb0312dfad3898e733fcabb9a078aa7c51c2da1a121f40094f9e4de85620  ./Image
+c65671e736fe60576969ee8f874ad28fb1bbefe305b434e298c8526882a6c1d1  ./artifact-manifest.txt
+5395da9deb86ef0fd912b76fa8080ef13dcc91faa3c102dc3a120158cfa8faae  ./freeze-manifest.md
+db802710fbdb9ae5d245388b19f7a01cf57822ca007a5c41920cc5dc13a5484b  ./mailmsg-event-worker-resource.img
+62c2af88e9b806b7218b877aaaeb7136bc2431e463161ac4d217e8d203d3e45e  ./mailmsg-event-worker-slot48k.its
+36e9582afc62aa0d8b73dfd6118c2fba37812ac40b4ad03150f5eed43a30dbfa  ./mailmsg-exclusive-reader-test-aarch64
+695462dc3986af841afb35c32da21624c1ff19e7c48f7fc48e86a1c4597dfaca  ./mailmsg-offline-wait-test-aarch64
+c85c829789c15445f665e9ccdbf02ccc9ce30cf0fdc0b499514e50d2c1d0ae55  ./mailmsg-user-client-aarch64
+42dd4335af68057c1329554e591fc786b958bf877db9befeb9ffbe4c87c0fa31  ./mailmsg-v1-controlled-stop.bin
+95f453099d363fdf1379130f7585fb2d57043665c48e94f88ac70b433508d61f  ./mailmsg-v1-final.img
+29dcd57a4f11fc988a1831352b278be91a60548ea5e9c63b68cbb7b1ced4b038  ./mailmsg-v1-normal.bin
+95ecb5e5631700ea02806e29cea9e7deb8fcd7b1dd84fb827bf3480ba7320e38  ./mailmsg-v1-start-timeout.bin
+fb8e4dbb7b772315223d9dcdd8d4ee96617d12aacd68ae56ecd6ce4b09656f01  ./mailmsg-v1-stop-timeout.bin
+6508159104cdf47792360285b6d97d0d10a4e2088fc4f615d2f775715312e2d2  ./mailmsg-v1-test.sh
+e8d6aa720ff1b9558637680b0302b6c10bf8f95d6a1971a51c9eb1b7d3f9649f  ./rk3588s-yyt-amp.dtb
+bfe13e0abdff5ef5699e64ad513b7a2b985a2feb8be851acdf4c9e5b773d669c  ./source-patches/0001-soc-rockchip-expose-MailMsg-event-worker-telemetry.patch

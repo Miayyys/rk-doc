@@ -1,0 +1,11 @@
+MailMsg V1 revision 7 RAM-only validation artifacts
+event date: 2026-09-01
+
+95f453099d363fdf1379130f7585fb2d57043665c48e94f88ac70b433508d61f  mailmsg-v1-final.img
+29dcd57a4f11fc988a1831352b278be91a60548ea5e9c63b68cbb7b1ced4b038  mailmsg-v1-normal.bin
+42dd4335af68057c1329554e591fc786b958bf877db9befeb9ffbe4c87c0fa31  mailmsg-v1-controlled-stop.bin
+95ecb5e5631700ea02806e29cea9e7deb8fcd7b1dd84fb827bf3480ba7320e38  mailmsg-v1-start-timeout.bin
+fb8e4dbb7b772315223d9dcdd8d4ee96617d12aacd68ae56ecd6ce4b09656f01  mailmsg-v1-stop-timeout.bin
+c85c829789c15445f665e9ccdbf02ccc9ce30cf0fdc0b499514e50d2c1d0ae55  mailmsg-user-client-aarch64
+36e9582afc62aa0d8b73dfd6118c2fba37812ac40b4ad03150f5eed43a30dbfa  mailmsg-exclusive-reader-test-aarch64
+695462dc3986af841afb35c32da21624c1ff19e7c48f7fc48e86a1c4597dfaca  mailmsg-offline-wait-test-aarch64

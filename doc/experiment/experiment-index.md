@@ -45,6 +45,7 @@
 - [EXP-20260821-003：构建 R1 PSCI CPU_ON 心跳候选](exp-20260821-003-build-r1-psci-cpu-on-heartbeat.md)（进行中）
 - [EXP-20260822-001：构建 R1 Linux-Zephyr 共享内存 PING 原型（含 V4 受控停止、STOP_REFUSED、OFFLINE 生命周期、R7 事件驱动 worker、RKLLM 共存、llm-soak 与四优先级同时负载）](exp-20260822-001-build-r1-amp-shmem-ping.md)（已验证：四 profile、一次 RKLLM 共存、一次约 3 分钟单生产者 llm-soak 与一次 window=1 四优先级同时负载 RAM-only 功能回归；R7 已冻结并推送）
 - [EXP-20260901-001：MailMsg 协议性能观察：四优先级与 p2 stepped window](exp-20260901-001-mailmsg-protocol-performance.md)（进行中：既有 window=1/p2 stepped 观察已记录；两次四优先级 sweep 的 window=4 均出现 p0/p1 各 1 次 PONG lost，window=7/post 尚未执行）
+- [EXP-20260902-002：LZAMP Rockchip develop-6.12 官方 EVB4 主机基线与 RAM-only booti 诊断](exp-20260902-002-lzamp-rockchip-6-12-evb4-booti.md)（已验证：官方 EVB4 直接 booti/eMMC 短读范围；R1 板级兼容待验证）
 
 ### 阶段 0：镜像与恢复准备
 
