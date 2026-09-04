@@ -23,13 +23,13 @@ related:
 - 硬件及版本：youyeetoo R1；板端目标为 Linux `6.12.69`，官方 EVB4 DTB 的硬件模型仍是 `EVB4`。
 - 软件、镜像或 Git commit：Rockchip 官方 `develop-6.12`，commit `470f9dccbdc42e7b8a824d0a5c5640a10e9457d2`；使用 `rockchip_linux_defconfig`。Image SHA-256：`d65c9cc775f1c2ddd7c84c832740ea6f89b8d227032068a4a70fbc10ea9d570c`；官方 `rk3588s-evb4-lp4x-v10-linux.dtb` SHA-256：`aa1de6ce9289724019f4a197f19cb0349c25a50af80655be25613afc0ee1370c`。
 - 连接方式：板端通过现有厂商 U-Boot 直接从 ext4 载入 `Image`/DTB 至 RAM，再执行 `booti`；未使用 FIT/resource 打包路径。
-- 操作前状态：保留现有可恢复路径；本轮不写 eMMC boot 分区，不执行 `saveenv`。
+- 操作前状态：步骤 1–15 均保留现有可恢复路径且未写 eMMC；步骤 16 前另有完整 p3 备份，并经主会话授权执行一次明确的 p3 写入，不执行 `saveenv`。
 
 ## 风险与恢复
 
-- 影响范围：仅 RAM-only 载入和启动候选；未改变 eMMC、启动分区或 U-Boot 环境。
-- 备份：沿用既有 eMMC 可恢复备份；本实验不新增块设备写入。
-- 恢复方法：重启回现有可恢复启动路径；不以本实验的 EVB4 DTB 作为 R1 持久化配置。
+- 影响范围：步骤 1–15 为 RAM-only 载入和启动候选；步骤 16 仅写入 `/dev/mmcblk0p3`（label `boot`，64 MiB），未改 p1、U-Boot 环境、rootfs 或其他分区。
+- 备份：主机源文件 `build/local/r1-20260816/r1-boot-p3.img`，板端复制为 `/userdata/lzamp/recovery/r1-boot-p3-original.img`；均为 67108864 B、SHA-256 `e983740d4df29d51fa58dea9d504d536b87c8b205935ec2ceb8d64e679cd833b`；写入前整分区回读哈希与该备份一致。
+- 恢复方法：已从 U-Boot `mmc 0:8` 将该原始备份载入 RAM 启动，进入 Linux `5.10.110` 且 `eth0` IPv4 正常，构成已验证回退启动入口；不将其写回 eMMC。
 
 ## 步骤与证据
 
@@ -95,7 +95,11 @@ related:
 
 同期 `regulatory.db` 报错 `-2` 尚未解决；无线关联尚未验证，有线 `GMAC` 仍未移植，不能称 Wi-Fi 或网络可用。本轮仍为 RAM-only，未写 eMMC 或保存 U-Boot 环境。
 
-在同一会话中，`wlP4p65s0` 与已 UP 的 `p2p0` 使用同一 MAC；启用 `wlP4p65s0` 时 mac80211 返回 `ENOTUNIQ`。关闭 `wlP4p65s0`、改用 NetworkManager 认可的 `p2p0` 后，`nmcli` 扫描返回 `bss_count=1`、`scan_exit=0`。NetworkManager 状态为 `p2p0 wifi disconnected`、`wlP4p65s0 wifi unavailable`、`p2p-dev-p2p0 unmanaged`。这只验证了基本射频扫描代表路径；关联、DHCP、吞吐、稳定性仍未验证，`regulatory.db` 错误仍未解决。
+在同一会话中，`wlP4p65s0` 与已 UP 的 `p2p0` 使用同一 MAC；启用 `wlP4p65s0` 时 mac80211 返回 `ENOTUNIQ`。关闭 `wlP4p65s0`、改用 NetworkManager 认可的 `p2p0` 后，先前一次 `nmcli` 扫描返回 `bss_count=1`、`scan_exit=0`。NetworkManager 状态为 `p2p0 wifi disconnected`、`wlP4p65s0 wifi unavailable`、`p2p-dev-p2p0 unmanaged`。这只验证了基本射频扫描代表路径；关联、DHCP、吞吐、稳定性仍未验证，`regulatory.db` 错误仍未解决。
+
+补充板端核验（事件时间未记录）：当前 `6.12.69-lzamp+` 会话的 `/lib/modules` 中没有 `mt7921e`、`btusb` 或 `btmtk`；从 `/userdata/lzamp/mt7922-smoke` 手动按依赖加载 Wi-Fi 模块后，PCI `14c3:0616` 绑定 `mt7921e`，ASIC revision 为 `79220010`，WM firmware 加载成功并创建 `wlP4p65s0`。关闭与 `p2p0` 同 MAC 的 `wlP4p65s0` 后，使用 `p2p0` 执行 NetworkManager 扫描，发现 `Loser`、`jililooss` 两个 WPA2 SSID（signal `25`），扫描退出码为 `0`。该结果只支持基本射频扫描链路通过，不支持关联、DHCP、互联网访问或稳定性结论。
+
+同一会话还观察到 USB `0489:e0e2` 已枚举且 Bluetooth core 已初始化，但 `/sys/class/bluetooth` 为空、未见 `hci0`。本地源码/配置核对显示 `CONFIG_BT_HCIBTUSB_MTK` 未启用；因此 Bluetooth 可用性仍未验证。
 
 ### 步骤 9：RKNPU/IOMMU RAM-only 初始化观察（部分验证）
 
@@ -145,6 +149,34 @@ related:
 
 U-Boot 明确加载 `/userdata/lzamp/linux-6.12-repro/Image`，板端核对 SHA-256 为 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7`，与步骤 12 新构建 Image 一致。板端 Linux `6.12.69-lzamp+` RAM-only 回归中，`/sys` driver 为 `rk_gmac-dwmac`，carrier=`1`、speed=`1000`；日志显示 `RTL8211F stmmac-1:00` 与 `Link Up 1Gbps Full flow rx/tx`，IPv4 SSH 实际可用。另观察到 GPIO3-19 已被 GMAC 占用，造成 `febf0030.pwm` pinctrl 冲突；该冲突未影响本次以太网验证，暂不判断其板级功能或根因。
 
+### 步骤 14：6.12 corrected wireless+GMAC 候选重复 RAM-only 启动停滞（根因未知）
+
+目的与预期结果：在不写 eMMC 的前提下重复启动同一 corrected wireless+GMAC 候选，观察其能否稳定完成 Linux 用户空间启动；不把单次启动停滞归因于某一日志。
+
+实际结果和退出码：2026-09-04，用户再次从同一 RAM-only 候选启动；系统完成 rootfs mount、devtmpfs 和 `Run /sbin/init`，随后在 `systemd[1]: Failed to find module 'autofs4'` 后串口无响应。主机 IPv4 ping 100% loss，SSH 返回 `No route to host`。此前提供的内核日志还包含多个不存在触摸/音频设备的 probe failure 和 RKNPU `EBUSY` warning，但未见 Oops、panic、RCU stall 或 mmc I/O error，且启动流程已继续到 root mount。历史正常 5.10 日志也曾出现 `autofs4` warning 后继续运行，因此不能将 `autofs4` 视为本次停滞根因。
+
+观察：本次与此前正常启动后的停滞现象共同支持“重复出现的偶发启动停滞，根因未知”；不将其写成已解决问题，也不把 corrected 候选设为 eMMC 默认路径。后续仅低优先级继续 RAM-only 观察。
+
+### 步骤 15：6.12 corrected wireless+GMAC 候选后续成功启动与自动加载回归（部分验证）
+
+目的与预期结果：在同一 corrected wireless+GMAC RAM-only 候选上重复启动，确认成功启动时的内核、以太网、MT7922 模块和 Bluetooth 控制器状态；不将控制器就绪扩展为网络业务或 Bluetooth 对端连接验证。
+
+实际结果和退出码：2026-09-04 后续启动成功，`uname` 为 `6.12.69-lzamp+`；`eth0` 为 UP，IPv4 地址为 `10.42.0.193/24`。PCI `14c3:0616` 自动绑定 `mt7921e`，模块自动可见，未手动 `insmod`；创建 `wlP4p65s0` 和 `p2p0`。USB Bluetooth 的 `hci0` 自动出现，状态为 USB、UP、RUNNING，地址为 `4C:D5:77:F7:44:F6`，RX/TX errors 均为 `0`。
+
+观察：本步骤仅验证该候选一次成功启动后的自动模块加载、以太网基本就绪和 Bluetooth HCI 控制器基本就绪；Wi-Fi association、DHCP/互联网以及 Bluetooth 对端连接仍未验证。它不消除步骤 14 记录的重复启动停滞、根因未知边界；截至本步骤仍未改变 eMMC 决策，后续固化与默认重启见步骤 16。
+
+### 步骤 16：R7 候选 p3 eMMC 固化与默认重启回归（已验证，仍保留稳定性风险）
+
+目的与预期结果：在已有完整 p3 备份和已验证回退入口的前提下，将候选 FIT 固化到 eMMC `p3`，随后不手动 `ext4load` 直接重启，确认默认启动路径及已验证的基础设备状态；不把一次成功重启扩展为长期稳定性或产品默认安全结论。
+
+实际结果和退出码：主机源文件为 `build/local/r1-20260816/r1-boot-p3.img`，板端复制为 `/userdata/lzamp/recovery/r1-boot-p3-original.img`，均为 67108864 B、SHA-256 `e983740d4df29d51fa58dea9d504d536b87c8b205935ec2ceb8d64e679cd833b`；该备份已从 U-Boot `mmc 0:8` 载入 RAM，进入 Linux `5.10.110` 且 `eth0` IPv4 正常。`/dev/mmcblk0p3` label 为 `boot`、容量 64 MiB；写入前整分区回读哈希与原始备份一致。
+
+主会话获授权后，以明确 `dd` 将 39354368 B 候选 FIT（SHA-256 `57620a75…a16363a`）填充为 64 MiB 镜像写入 `/dev/mmcblk0p3`；输出 `16+0 records`、`67108864 bytes`、`conv=fsync`，完整回读 SHA-256 为 `b7c672d0d07df75b5721e1831ac3bd199cd2e3af5b209df7d7c2e34f2099d08f`。未改 p1、U-Boot 环境、rootfs 或其他分区，也未执行 `saveenv`。
+
+随后默认重启（未手动 `ext4load`）成功进入 `6.12.69-lzamp+`，`nproc=7`、online CPU 为 `0–6`，`cpu@300` absent、Zephyr reserved present，`eth0=10.42.0.193`。MT7922 PCI `14c3:0616` 自动绑定 `mt7921e`，模块自动可见，创建 `wlP4p65s0`/`p2p0`；Bluetooth `hci0` 自动为 UP/RUNNING、RX/TX errors=0。AMP driver 为 `lzamp-amp-mailmsg`，mailbox0 为 `rockchip-mailbox`，`renderD129` 为 RKNPU v0.9.8。Wi-Fi 扫描发现 SSID `Loser`；BT discovery 已启动，但 Wi-Fi association、DHCP/互联网和 BT 对端连接仍未验证。
+
+结论：本步骤验证 R7 候选 p3 写入后的默认启动和基础设备自动加载/就绪，并保留此前偶发 systemd early hang 的已知未解决风险；不宣称彻底稳定。
+
 ## 结果对照
 
 | 检查项 | 预期 | 实际 | 判定 |
@@ -158,11 +190,12 @@ U-Boot 明确加载 `/userdata/lzamp/linux-6.12-repro/Image`，板端核对 SHA-
 | PCI domain 枚举 | 记录正式 DTB 会话的 endpoint 发现结果 | `lspci` 输出 `domain3/4-no-device`；domain3/4 未枚举 endpoint，历史 BDF `0004:41:00.0` 本次未验证 | 已观察；不等于 PCIe 根因 |
 | PCIe 修正候选主机构建 | 主机构建/静态检查通过后进入板测队列 | `fe180` disabled；`fe190` okay，reset raw `131 7 0`、supply phandle `132`；DTB `267595` B，SHA-256 `a8e93651e10ff79272427f718c727eda89fe2bb02f66dc5d915f2731f435677d` | 通过（主机侧） |
 | PCIe 修正版 DTB 回归 | RAM-only 启动并观察 endpoint 链路 | 重启一次后进入系统；`fe190` 从 `LTSSM=0x3` 到 `Link up 0x130011`、Gen2 x1，`0004:41:00.0` endpoint 枚举 | 通过（单次代表路径；驱动/网络未验证） |
-| MT7922 驱动与网络功能 | endpoint 可绑定驱动并完成基本网络功能 | `mt7921e` 已绑定，出现 `phy0`、`wlP4p65s0`、`p2p0`；基本射频扫描已在关闭冲突接口后得到 1 个 BSS，关联/网络功能仍未验证 | 部分通过 |
+| MT7922 驱动与网络功能 | endpoint 可绑定驱动并完成基本网络功能 | `mt7921e` 已绑定，出现 `phy0`、`wlP4p65s0`、`p2p0`；此前扫描得到 1 个 BSS，本次关闭冲突接口后扫描发现 `Loser`、`jililooss` 两个 WPA2 SSID，关联/网络功能仍未验证 | 部分通过 |
 | 6.12 网络接口现状 | endpoint 枚举后出现可用网络接口 | `ip -br addr` 仅有 `lo`；当前内核未加载或不含可用 `mt7921e` 模块，LZAMP DTS 尚未移植目标板有线 `GMAC` | 已观察；不等于硬件失败 |
 | MT7921E 模块主机侧候选 | 构建包含模块及依赖的可核对 Image | `CONFIG_MT7921E=m`、`CONFIG_BCMDHD` disabled、`CFG80211/MAC80211/PCI=y`、kernelrelease/vermagic `6.12.69-lzamp+`；Image SHA-256 `928d67…`；5 个模块和 2 个固件已整理，完整哈希见步骤 7 | 通过（主机构建；尚未上板） |
 | MT7922 驱动与固件 RAM-only 回归 | 模块绑定、firmware 加载并创建无线接口 | `firmware_class.path=/userdata/lzamp/mt7922-smoke/firmware`；`mt7921e` in use，sysfs driver、`phy0`、`wlP4p65s0`、`p2p0` 均出现；ASIC `79220010`、WM firmware 成功 | 通过（代表路径） |
-| regulatory.db 与无线业务 | 无线区域数据库和基本业务路径可用 | `regulatory.db` 报错 `-2` 尚未解决；关闭同 MAC 的 `wlP4p65s0` 后使用 `p2p0` 扫描得到 `bss_count=1`、`scan_exit=0`；关联、DHCP、吞吐、稳定性未验证 | 部分通过（仅基本扫描） |
+| regulatory.db 与无线业务 | 无线区域数据库和基本业务路径可用 | `regulatory.db` 报错 `-2` 尚未解决；关闭同 MAC 的 `wlP4p65s0` 后使用 `p2p0` 扫描此前得到 1 个 BSS，本次发现 `Loser`、`jililooss` 两个 WPA2 SSID，扫描退出码为 `0`；关联、DHCP、吞吐、稳定性未验证 | 部分通过（仅基本扫描） |
+| Bluetooth USB 与驱动 | USB Bluetooth 设备出现 HCI 控制器并可用 | USB `0489:e0e2` 已枚举、Bluetooth core 已初始化，但 `/sys/class/bluetooth` 为空、未见 `hci0`；`CONFIG_BT_HCIBTUSB_MTK` 未启用 | 未验证 |
 | RKNPU 6.12 驱动初始化 | RKNPU 加入 IOMMU 并完成 0.9.8 DRM 初始化，节点映射可核对 | `fdab0000.npu` 加入 IOMMU group `15`/IOMMU mode；三段 MMIO request `-EBUSY` 后仍初始化 `rknpu 0.9.8`、DRM minor `1`、debugfs `v0.9.8`；`renderD128=rockchip-drm`、`renderD129=RKNPU` | 部分通过（不等于 RKLLM 推理） |
 | RKNPU/RKLLM 代表性短 smoke | 当前 RKNPU 初始化后完成代表性 RKLLM 短文本 smoke | Runtime `1.3.0`、driver `0.9.8`、Qwen3.5-0.8B W8A8 target `rk3588` 初始化成功；Enabled CPUs `[4,5,6,7]`/count `4`；`chat-smoke` 返回 `ok=true/executed=false/response=READY`、exit `0`；筛选 dmesg 未见 IOMMU fault、SError 或 job timeout | 通过（短 smoke；不覆盖长稳/性能/DVFS/AMP/MailMsg） |
 | 6.12 LZAMP AMP 候选主机构建与静态布局 | AMP DTB/Zephyr 槽位和 mailbox0 四通道可构建并静态核对 | Image/DTB SHA-256 已记录；无 `cpu@300`，`zephyr@50000000` 为 `1 MiB` `no-map`、entry `0x5000100c`，slot `49152`，mailbox0 okay/四 channel；正常构建和 15 项主机测试通过 | 通过（主机/静态范围） |
@@ -171,6 +204,11 @@ U-Boot 明确加载 `/userdata/lzamp/linux-6.12-repro/Image`，板端核对 SHA-
 | 6.12 MailMsg 受控停止与 rearm 第二会话 | `mailmsg_stop` 成功进入 offline，rearm 后可建立第二会话并完成 p0 回归 | 第一次 STOP `stop_exit=0`；affinity `mpidr=0x300 level=0 state=off (1)`；status `mailmsg_state=offline`、`stop_sequence=1`、`stop_reply=6`、`stop_result=0`；rearm/重新加载/`start` 后 p0 `900` 得 ACK `seq2 peer1`、PONG `seq3 value901`、exit `0`，affinity on、active、session `2/2`、session_result `0`；第二次 STOP 同样得到 affinity off、`mailmsg_state=offline`、`stop_reply=6`、`stop_result=0` | 通过（两次受控停止与一次 rearm 代表回归；不覆盖压力/长期/持久化） |
 | 6.12 LZAMP canonical source 可复现主机构建 | 干净 worktree 可重放 prepare、补丁、构建与测试 | 锁定 commit `470f9dccbdc42e7b8a824d0a5c5640a10e9457d2` 的 prepare 成功，DTS `cmp` 一致，Image/DTB/modules 构建成功，LZAMP 两个驱动对象成功编译，关键配置 `MAILBOX=y`、`ROCKCHIP_MBOX=y`、`LZAMP_AMP_MAILMSG=y`、`MT7921E=m`，15 项主机测试通过；DTB SHA-256 `573734159a7bc8a8d13eaa6160ff4a33f6cc3cad578df885e8594d626e38e5b8`，新 Image SHA-256 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7`；步骤 12 记录当时尚未上板，步骤 13 已用同一 SHA 完成板端回归 | 通过（主机构建可复现，且后续同一 Image 已完成 GMAC1 板端验证） |
 | 6.12 LZAMP GMAC1 以太网 RAM-only 回归 | GMAC1 可绑定、链路建立并提供 IPv4 SSH | 修正 DTS DTB SHA-256 `47d866bf9c49aa81fab16884903c6ea0e19fe09334a658a7b49bd33760eec75b`；`rk_gmac-dwmac`、carrier=`1`、speed=`1000`，RTL8211F 1Gbps Full 链路，IPv4 SSH 可用；GPIO3-19 的 PWM pinctrl 冲突另行观察 | 通过（以太网代表路径；不覆盖其他板级功能） |
+| corrected wireless+GMAC 候选重复启动 | RAM-only 启动应重复完成用户空间并保持可达 | 完成 rootfs mount、devtmpfs、`Run /sbin/init` 后，在 `autofs4` warning 后串口无响应；ping 100% loss、SSH `No route to host`；无 Oops/panic/RCU stall/mmc I/O error 证据，根因未知 | 不确定（暂缓 eMMC 默认，低优先级 RAM-only 复现） |
+| corrected wireless+GMAC 候选后续成功启动 | 自动加载网络/无线/Bluetooth 组件并完成基本控制器就绪 | `6.12.69-lzamp+`；`eth0` UP、IPv4 `10.42.0.193/24`；PCI `14c3:0616` 自动绑定 `mt7921e`，出现 `wlP4p65s0`/`p2p0`；`hci0` 自动出现且 UP/RUNNING、RX/TX errors=0 | 部分通过（不覆盖 Wi-Fi association、DHCP/互联网或 BT 对端连接） |
+| 原始 p3 备份回退入口 | U-Boot `mmc 0:8` RAM 启动原始备份并恢复可达网络 | 67108864 B、SHA-256 `e983740d4df29d51fa58dea9d504d536b87c8b205935ec2ceb8d64e679cd833b`；进入 Linux `5.10.110`，`eth0` IPv4 正常 | 通过（已验证回退启动入口） |
+| R7 候选写入 eMMC p3 | 写前有备份，写后整分区回读一致 | `/dev/mmcblk0p3`（label `boot`，64 MiB）写入 64 MiB 镜像，`16+0 records`、`67108864 bytes`、`conv=fsync`；回读 SHA-256 `b7c672d0d07df75b5721e1831ac3bd199cd2e3af5b209df7d7c2e34f2099d08f`，其他分区/环境未改 | 通过（首次固化；非长期稳定性验证） |
+| R7 默认重启 | 不手动加载时进入 6.12 LZAMP 并恢复基础设备 | 默认重启进入 `6.12.69-lzamp+`、7 核；`eth0` IPv4、MT7922 自动 `mt7921e`、`wlP4p65s0`/`p2p0`、`hci0` UP/RUNNING、AMP/mailbox/RKNPU 基础节点均出现；扫描发现 `Loser` | 通过（一次默认启动；保留早期停滞风险） |
 | R1 板级兼容 | R1 专用功能与外设保持正确 | 正式 LZAMP DTB 已完成 RAM-only 启动，但 R1 完整兼容性、其余 AMP/MailMsg 生命周期、RKLLM、无线、显示仍未验证 | 未确定 |
 
 ## 结论
@@ -180,7 +218,7 @@ U-Boot 明确加载 `/userdata/lzamp/linux-6.12-repro/Image`，板端核对 SHA-
 本结论包括正式 LZAMP DTB 的一次 RAM-only 启动，以及官方 EVB4/诊断 DTB 的启动与 eMMC 短读路径；它们均不等于 R1 完整板级兼容性。RKNPU 0.9.8 驱动初始化、IOMMU 归属、DRM 节点映射和一次 Qwen3.5 代表性短文本 smoke 已观察验证，但不等于长稳、性能或产品验证。6.12 LZAMP AMP 候选已完成一次四优先级、NPU+AMP+MailMsg 组合及两次受控停止、一次 rearm/第二会话 active 代表回归；步骤12当时该 Image 尚未上板，随后步骤13已用同一 SHA 完成板端回归。步骤 13 已验证 GMAC1 1Gbps 链路及 IPv4 SSH。压力、长期运行、持久化和更广泛的 R1 兼容性仍未验证。无线关联和显示也仍未验证。
 
 正式 LZAMP DTB `rk3588s-lzamp-linux.dts/.dtb` 已完成一次 RAM-only `booti` 回归：kernel `6.12.69-g470f9dccbdc4`、8 核、model `LZAMP RK3588S`、compatible `lzamp,rk3588s`/`rockchip,rk3588` 均与预期一致。此前正式 DTB 会话观察到两路 PCIe Link Fail 和 domain3/4 无 endpoint；步骤 5 的 PCIe 修正版候选在重启后的成功启动中使 `fe190` 完成 Gen2 x1 链路并枚举 MT7922 `0004:41:00.0`，但一次串口静止仍为未复现现象，不能据此宣称 PCIe 根因或修复已确认。`fe180=l1/domain3`、`fe190=l2/domain4` 仍是源码查阅候选；6.12 `fe180` 链路状态、无线关联和完整网络功能仍未验证。RKNPU 0.9.8 驱动初始化、`renderD128`/`renderD129` 映射和一次 Qwen3.5 代表性短文本 smoke 已观察验证，但不覆盖 RKLLM 长稳/性能/DVFS；PCI domain4 枚举后 `PME` 附近停顿的根因待查。该 PCIe 回归不覆盖 R1 完整兼容性、以太网、显示、长期运行或 eMMC 固化；6.12 AMP+MailMsg 组合及两次受控停止、一次 rearm/第二会话 active 回归见步骤 10–11，旧 5.10/YYT 名称只作为历史证据。
-在 endpoint 枚举成功的 6.12 系统中，正式 Image 的 `ip -br addr` 仅显示 `lo`；原因层面仅记录为当时内核未加载或不含可用 `mt7921e` 模块，以及 LZAMP DTS 尚未移植目标板有线 `GMAC`，不构成硬件失败结论。随后使用 `CONFIG_MT7921E=m` 候选完成一次 RAM-only smoke：`mt7921e` 绑定并加载 WM firmware，创建 `phy0`、`wlP4p65s0` 和 `p2p0`；在关闭同 MAC 的 `wlP4p65s0` 后，使用 `p2p0` 完成一次返回 1 个 BSS 的基本扫描。`regulatory.db`、关联、DHCP、吞吐和稳定性仍未验证。步骤 13 已在修正 DTS 上验证目标板 GMAC1 的 1Gbps 链路与 IPv4 SSH；这不扩展为完整 R1 网络或板级兼容性结论。
+在 endpoint 枚举成功的 6.12 系统中，正式 Image 的 `ip -br addr` 仅显示 `lo`；原因层面仅记录为当时内核未加载或不含可用 `mt7921e` 模块，以及 LZAMP DTS 尚未移植目标板有线 `GMAC`，不构成硬件失败结论。随后使用 `CONFIG_MT7921E=m` 候选完成一次 RAM-only smoke：`mt7921e` 绑定并加载 WM firmware，创建 `phy0`、`wlP4p65s0` 和 `p2p0`；在关闭同 MAC 的 `wlP4p65s0` 后，使用 `p2p0` 先后观察到 1 个 BSS、以及 `Loser`/`jililooss` 两个 WPA2 SSID 的基本扫描结果。`regulatory.db`、关联、DHCP、吞吐和稳定性仍未验证。USB `0489:e0e2` 虽已枚举且 Bluetooth core 已初始化，但没有 `hci0`，`CONFIG_BT_HCIBTUSB_MTK` 未启用，Bluetooth 可用性仍未验证。步骤 13 已在修正 DTS 上验证目标板 GMAC1 的 1Gbps 链路与 IPv4 SSH；步骤 14 随后再次观察到 corrected wireless+GMAC 候选启动停滞，步骤 15 又观察到一次成功启动后的自动模块/控制器就绪，步骤 16 完成一次 p3 固化和默认重启，停滞现象的根因仍未知；这不扩展为完整 R1 网络或板级兼容性结论。
 
 ## 关联知识与问题
 
@@ -189,4 +227,4 @@ U-Boot 明确加载 `/userdata/lzamp/linux-6.12-repro/Image`，板端核对 SHA-
 
 ## 后续行动
 
-- [ ] 唯一优先的下一步：在不改变 eMMC/U-Boot 可恢复路径的前提下，继续处理无线 `regulatory.db` 错误并验证关联；步骤 13 已用步骤 12 的 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7` Image 完成 GMAC1 RAM-only 回归，压力、长稳、持久化仍不在本实验已验证范围。
+- [ ] 唯一优先的下一步：在不继续改写 eMMC/U-Boot 可恢复路径的前提下，低优先级继续对 corrected wireless+GMAC 候选做 RAM-only 启动观察，并继续处理无线 `regulatory.db` 错误与关联；步骤 16 已完成一次 p3 固化和默认重启，但步骤 14 的重复启动停滞根因未知，不宣称彻底稳定或产品默认安全。压力、长稳、持久化仍不在本实验已验证范围。

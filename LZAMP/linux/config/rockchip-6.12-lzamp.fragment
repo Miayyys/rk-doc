@@ -11,6 +11,11 @@ CONFIG_LOCALVERSION="-lzamp"
 # can be loaded from the root filesystem after PCIe enumeration.
 CONFIG_MT7921E=m
 
+# The MT7922 Bluetooth function is exposed over USB.  Keep the generic HCI
+# USB driver modular and enable its MediaTek firmware/setup support.
+CONFIG_BT_HCIBTUSB=m
+CONFIG_BT_HCIBTUSB_MTK=y
+
 # Run Zephyr on the Linux-excluded A55 core3 and expose MailMsg priorities.
 CONFIG_MAILBOX=y
 CONFIG_ROCKCHIP_MBOX=y

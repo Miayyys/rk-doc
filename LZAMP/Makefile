@@ -12,7 +12,7 @@ LINUX_6_12_SRC ?= $(CURDIR)/third_party/linux-rockchip
 LINUX_6_12_OUT ?= $(CURDIR)/build/linux-rockchip-6.12
 LINUX_JOBS ?= $(shell nproc)
 
-.PHONY: all test agent-test board-tools linux-6.12-prepare linux-6.12-configure linux-6.12-build clean
+.PHONY: all test agent-test board-tools linux-6.12-prepare linux-6.12-configure linux-6.12-verify-source linux-6.12-build clean
 
 all: test
 
@@ -35,7 +35,11 @@ linux-6.12-configure:
 	$(MAKE) -C "$(LINUX_6_12_SRC)" O="$(LINUX_6_12_OUT)" \
 		ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
 
-linux-6.12-build:
+linux-6.12-verify-source:
+	cmp linux/dts/rk3588s-lzamp-linux.dts \
+		"$(LINUX_6_12_SRC)/arch/arm64/boot/dts/rockchip/rk3588s-lzamp-linux.dts"
+
+linux-6.12-build: linux-6.12-verify-source
 	$(MAKE) -C "$(LINUX_6_12_SRC)" O="$(LINUX_6_12_OUT)" \
 		ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(LINUX_JOBS)" \
 		Image rockchip/rk3588s-lzamp-linux.dtb modules
