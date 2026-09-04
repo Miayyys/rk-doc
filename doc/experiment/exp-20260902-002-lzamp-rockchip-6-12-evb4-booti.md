@@ -133,9 +133,17 @@ related:
 
 目的与预期结果：在锁定的 Rockchip `develop-6.12` commit 上，从干净 worktree 重放 LZAMP 补丁和构建流程，确认 DTS、Kconfig/Makefile 接入及主机测试可复现；不把新构建 Image 当作已上板验证。
 
-实际结果和退出码：现有 patch `0001` 已更新为与已验证的 95 行 DTS 一致；新增 patch `0002` 接入 Kconfig/Makefile 和两个 canonical-source wrappers。新增 prepare 脚本检查锁定 commit `470f9dccbdc42e7b8a824d0a5c5640a10e9457d2`、拒绝 dirty tree 并应用补丁。在从该 commit 创建的干净 worktree 中，prepare 成功，`cmp` 确认 DTS 一致；完整 Image、DTB 和 modules 构建成功，LZAMP 两个驱动对象成功编译。配置阶段补传 `CROSS_COMPILE` 后，在全新输出目录无交互完成，关键配置为 `MAILBOX=y`、`ROCKCHIP_MBOX=y`、`LZAMP_AMP_MAILMSG=y`、`MT7921E=m`；LZAMP 15 项主机测试通过。主会话未提供各步骤的单独退出码。DTB SHA-256 仍为 `573734159a7bc8a8d13eaa6160ff4a33f6cc3cad578df885e8594d626e38e5b8`；新构建 Image 的 SHA-256 为 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7`，该 Image 尚未上板。
+实际结果和退出码：现有 patch `0001` 已更新为与已验证的 95 行 DTS 一致；新增 patch `0002` 接入 Kconfig/Makefile 和两个 canonical-source wrappers。新增 prepare 脚本检查锁定 commit `470f9dccbdc42e7b8a824d0a5c5640a10e9457d2`、拒绝 dirty tree 并应用补丁。在从该 commit 创建的干净 worktree 中，prepare 成功，`cmp` 确认 DTS 一致；完整 Image、DTB 和 modules 构建成功，LZAMP 两个驱动对象成功编译。配置阶段补传 `CROSS_COMPILE` 后，在全新输出目录无交互完成，关键配置为 `MAILBOX=y`、`ROCKCHIP_MBOX=y`、`LZAMP_AMP_MAILMSG=y`、`MT7921E=m`；LZAMP 15 项主机测试通过。主会话未提供各步骤的单独退出码。DTB SHA-256 仍为 `573734159a7bc8a8d13eaa6160ff4a33f6cc3cad578df885e8594d626e38e5b8`；新构建 Image 的 SHA-256 为 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7`；步骤 12 记录当时该 Image 尚未上板，后续板端核验见步骤 13。
 
-观察：本步骤验证的是锁定源码、补丁、prepare 和主机构建链的可重复性。它不改变步骤 10–11 的既有板端证据，也不证明新 Image 的 RAM-only 启动或功能兼容性。
+观察：本步骤验证的是锁定源码、补丁、prepare 和主机构建链的可重复性。它不改变步骤 10–11 的既有板端证据；步骤 12 当时未证明新 Image 的 RAM-only 启动或功能兼容性，后续步骤 13 已补充同一 Image 的板端核验。
+
+### 步骤 13：6.12 LZAMP GMAC1 以太网 RAM-only 回归（已验证）
+
+目的与预期结果：定位初始 6.12 LZAMP 系统中 GMAC1 未形成网络接口的板级资源冲突，使用保留旧 YYT 已验证参数的 canonical DTS 恢复 GMAC1，并以 RAM-only 启动验证链路和 IPv4 SSH；不扩展为所有板级外设功能。
+
+实际结果和退出码：初始 6.12 LZAMP 会话中 runtime 的 GMAC 状态为 `okay`，但日志显示 GPIO3_A5 被 `febb0000.serial` 占用，导致 GMAC pinctrl probe 失败。源码核对确认 `febb0000` 为 UART8；EVB4 启用 UART8 M1，其 A2/A3/A5 与 GMAC1 RGMII 冲突，而旧 YYT DTS 未启用 UART8。canonical DTS 随后加入旧 YYT 已验证的 GMAC1 参数：`rgmii-rxid`、clock input、`MDIO phy@0`、TX `0x44`/RX `0x18` 和 GPIO3 PB7 reset，并禁用 EVB4 `wireless_bluetooth` 与 UART8。新 DTB SHA-256 为 `47d866bf9c49aa81fab16884903c6ea0e19fe09334a658a7b49bd33760eec75b`。
+
+U-Boot 明确加载 `/userdata/lzamp/linux-6.12-repro/Image`，板端核对 SHA-256 为 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7`，与步骤 12 新构建 Image 一致。板端 Linux `6.12.69-lzamp+` RAM-only 回归中，`/sys` driver 为 `rk_gmac-dwmac`，carrier=`1`、speed=`1000`；日志显示 `RTL8211F stmmac-1:00` 与 `Link Up 1Gbps Full flow rx/tx`，IPv4 SSH 实际可用。另观察到 GPIO3-19 已被 GMAC 占用，造成 `febf0030.pwm` pinctrl 冲突；该冲突未影响本次以太网验证，暂不判断其板级功能或根因。
 
 ## 结果对照
 
@@ -161,17 +169,18 @@ related:
 | 6.12 LZAMP AMP 候选启动与 SESSION_READY | RAM-only booti 后可启动 CPU3 并完成一次 MailMsg session 握手 | Linux `6.12.69-lzamp+`、7 核、cpu300 absent/reserved present、mailbox 绑定、launcher sysfs 存在；Zephyr `CPU_ON ret=0`、affinity on、active `session=1/1`、worker valid、收到 `SESSION_READY`；加载前 observation 均 `valid=0` | 通过（启动/握手代表路径） |
 | 6.12 四优先级与 NPU+AMP+MailMsg native tool 组合 | 四优先级基本请求及一次 Qwen3.5 native tool 应闭环 | p0/p1 ACK+PONG `101/201`、p2/p3 PONG `301/401`；各级 tx/full/depth 与错误计数符合记录；Qwen3.5 `zephyr_increment(41)` 经 p1/window1 得 result `42`，ACK `8/5`、PONG `9`、exit `0`；终态 active/session `1/1`、CPU3 on、pending `0`、worker msg `5`，无新增 IOMMU fault/SError/RKNPU timeout | 通过（首次组合代表路径；不覆盖 stop/rearm、压力/长稳/性能/持久化） |
 | 6.12 MailMsg 受控停止与 rearm 第二会话 | `mailmsg_stop` 成功进入 offline，rearm 后可建立第二会话并完成 p0 回归 | 第一次 STOP `stop_exit=0`；affinity `mpidr=0x300 level=0 state=off (1)`；status `mailmsg_state=offline`、`stop_sequence=1`、`stop_reply=6`、`stop_result=0`；rearm/重新加载/`start` 后 p0 `900` 得 ACK `seq2 peer1`、PONG `seq3 value901`、exit `0`，affinity on、active、session `2/2`、session_result `0`；第二次 STOP 同样得到 affinity off、`mailmsg_state=offline`、`stop_reply=6`、`stop_result=0` | 通过（两次受控停止与一次 rearm 代表回归；不覆盖压力/长期/持久化） |
-| 6.12 LZAMP canonical source 可复现主机构建 | 干净 worktree 可重放 prepare、补丁、构建与测试 | 锁定 commit `470f9dccbdc42e7b8a824d0a5c5640a10e9457d2` 的 prepare 成功，DTS `cmp` 一致，Image/DTB/modules 构建成功，LZAMP 两个驱动对象成功编译，关键配置 `MAILBOX=y`、`ROCKCHIP_MBOX=y`、`LZAMP_AMP_MAILMSG=y`、`MT7921E=m`，15 项主机测试通过；DTB SHA-256 `573734159a7bc8a8d13eaa6160ff4a33f6cc3cad578df885e8594d626e38e5b8`，新 Image SHA-256 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7` | 通过（主机构建可复现；新 Image 尚未上板） |
+| 6.12 LZAMP canonical source 可复现主机构建 | 干净 worktree 可重放 prepare、补丁、构建与测试 | 锁定 commit `470f9dccbdc42e7b8a824d0a5c5640a10e9457d2` 的 prepare 成功，DTS `cmp` 一致，Image/DTB/modules 构建成功，LZAMP 两个驱动对象成功编译，关键配置 `MAILBOX=y`、`ROCKCHIP_MBOX=y`、`LZAMP_AMP_MAILMSG=y`、`MT7921E=m`，15 项主机测试通过；DTB SHA-256 `573734159a7bc8a8d13eaa6160ff4a33f6cc3cad578df885e8594d626e38e5b8`，新 Image SHA-256 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7`；步骤 12 记录当时尚未上板，步骤 13 已用同一 SHA 完成板端回归 | 通过（主机构建可复现，且后续同一 Image 已完成 GMAC1 板端验证） |
+| 6.12 LZAMP GMAC1 以太网 RAM-only 回归 | GMAC1 可绑定、链路建立并提供 IPv4 SSH | 修正 DTS DTB SHA-256 `47d866bf9c49aa81fab16884903c6ea0e19fe09334a658a7b49bd33760eec75b`；`rk_gmac-dwmac`、carrier=`1`、speed=`1000`，RTL8211F 1Gbps Full 链路，IPv4 SSH 可用；GPIO3-19 的 PWM pinctrl 冲突另行观察 | 通过（以太网代表路径；不覆盖其他板级功能） |
 | R1 板级兼容 | R1 专用功能与外设保持正确 | 正式 LZAMP DTB 已完成 RAM-only 启动，但 R1 完整兼容性、其余 AMP/MailMsg 生命周期、RKLLM、无线、显示仍未验证 | 未确定 |
 
 ## 结论
 
 已验证：锁定的 Rockchip `develop-6.12` 可在主机用 `rockchip_linux_defconfig` 构建 Image/官方 EVB4 DTB；现有厂商 U-Boot 可直接 ext4load 后 `booti`，无需 FIT/resource 打包即可进入 Linux `6.12.69`。在禁用官方 EVB4 `i2c8` FUSB302 节点并移除 `supports-cqe` 的诊断 DTB 上，完成了 EVB4 model 的 RAM-only 启动和 eMMC 约 38 MB 短读。
 
-本结论包括正式 LZAMP DTB 的一次 RAM-only 启动，以及官方 EVB4/诊断 DTB 的启动与 eMMC 短读路径；它们均不等于 R1 完整板级兼容性。RKNPU 0.9.8 驱动初始化、IOMMU 归属、DRM 节点映射和一次 Qwen3.5 代表性短文本 smoke 已观察验证，但不等于长稳、性能或产品验证。6.12 LZAMP AMP 候选已完成一次四优先级、NPU+AMP+MailMsg 组合及两次受控停止、一次 rearm/第二会话 active 代表回归；步骤 12 又完成了锁定源码与 LZAMP 补丁的干净 worktree 可复现主机构建，但新 Image 尚未上板。压力、长期运行、持久化和更广泛的 R1 兼容性仍未验证。无线关联、以太网和显示也仍未验证。
+本结论包括正式 LZAMP DTB 的一次 RAM-only 启动，以及官方 EVB4/诊断 DTB 的启动与 eMMC 短读路径；它们均不等于 R1 完整板级兼容性。RKNPU 0.9.8 驱动初始化、IOMMU 归属、DRM 节点映射和一次 Qwen3.5 代表性短文本 smoke 已观察验证，但不等于长稳、性能或产品验证。6.12 LZAMP AMP 候选已完成一次四优先级、NPU+AMP+MailMsg 组合及两次受控停止、一次 rearm/第二会话 active 代表回归；步骤12当时该 Image 尚未上板，随后步骤13已用同一 SHA 完成板端回归。步骤 13 已验证 GMAC1 1Gbps 链路及 IPv4 SSH。压力、长期运行、持久化和更广泛的 R1 兼容性仍未验证。无线关联和显示也仍未验证。
 
 正式 LZAMP DTB `rk3588s-lzamp-linux.dts/.dtb` 已完成一次 RAM-only `booti` 回归：kernel `6.12.69-g470f9dccbdc4`、8 核、model `LZAMP RK3588S`、compatible `lzamp,rk3588s`/`rockchip,rk3588` 均与预期一致。此前正式 DTB 会话观察到两路 PCIe Link Fail 和 domain3/4 无 endpoint；步骤 5 的 PCIe 修正版候选在重启后的成功启动中使 `fe190` 完成 Gen2 x1 链路并枚举 MT7922 `0004:41:00.0`，但一次串口静止仍为未复现现象，不能据此宣称 PCIe 根因或修复已确认。`fe180=l1/domain3`、`fe190=l2/domain4` 仍是源码查阅候选；6.12 `fe180` 链路状态、无线关联和完整网络功能仍未验证。RKNPU 0.9.8 驱动初始化、`renderD128`/`renderD129` 映射和一次 Qwen3.5 代表性短文本 smoke 已观察验证，但不覆盖 RKLLM 长稳/性能/DVFS；PCI domain4 枚举后 `PME` 附近停顿的根因待查。该 PCIe 回归不覆盖 R1 完整兼容性、以太网、显示、长期运行或 eMMC 固化；6.12 AMP+MailMsg 组合及两次受控停止、一次 rearm/第二会话 active 回归见步骤 10–11，旧 5.10/YYT 名称只作为历史证据。
-在 endpoint 枚举成功的 6.12 系统中，正式 Image 的 `ip -br addr` 仅显示 `lo`；原因层面仅记录为当时内核未加载或不含可用 `mt7921e` 模块，以及 LZAMP DTS 尚未移植目标板有线 `GMAC`，不构成硬件失败结论。随后使用 `CONFIG_MT7921E=m` 候选完成一次 RAM-only smoke：`mt7921e` 绑定并加载 WM firmware，创建 `phy0`、`wlP4p65s0` 和 `p2p0`；在关闭同 MAC 的 `wlP4p65s0` 后，使用 `p2p0` 完成一次返回 1 个 BSS 的基本扫描。`regulatory.db`、关联、DHCP、吞吐、稳定性及有线网络仍未验证。
+在 endpoint 枚举成功的 6.12 系统中，正式 Image 的 `ip -br addr` 仅显示 `lo`；原因层面仅记录为当时内核未加载或不含可用 `mt7921e` 模块，以及 LZAMP DTS 尚未移植目标板有线 `GMAC`，不构成硬件失败结论。随后使用 `CONFIG_MT7921E=m` 候选完成一次 RAM-only smoke：`mt7921e` 绑定并加载 WM firmware，创建 `phy0`、`wlP4p65s0` 和 `p2p0`；在关闭同 MAC 的 `wlP4p65s0` 后，使用 `p2p0` 完成一次返回 1 个 BSS 的基本扫描。`regulatory.db`、关联、DHCP、吞吐和稳定性仍未验证。步骤 13 已在修正 DTS 上验证目标板 GMAC1 的 1Gbps 链路与 IPv4 SSH；这不扩展为完整 R1 网络或板级兼容性结论。
 
 ## 关联知识与问题
 
@@ -180,4 +189,4 @@ related:
 
 ## 后续行动
 
-- [ ] 唯一优先的下一步：在不改变 eMMC/U-Boot 可恢复路径的前提下，对步骤 12 新构建 Image 做一次 RAM-only `booti` 回归，单独核对启动、LZAMP DTB 与既有 6.12 AMP/MailMsg 证据；在该回归完成前不把 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7` Image 写成板端已验证。无线 `regulatory.db`/关联与压力、长稳、持久化仍不在本实验已验证范围。
+- [ ] 唯一优先的下一步：在不改变 eMMC/U-Boot 可恢复路径的前提下，继续处理无线 `regulatory.db` 错误并验证关联；步骤 13 已用步骤 12 的 `890c9b36259654065427b334bd1d076fc6a2c19e92ebdcb9bcdf3cf627b1b4e7` Image 完成 GMAC1 RAM-only 回归，压力、长稳、持久化仍不在本实验已验证范围。

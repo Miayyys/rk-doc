@@ -61,6 +61,48 @@
 };
 
 /*
+ * The target board routes GMAC1 to an external-clock RGMII PHY at MDIO
+ * address 0.  GPIO3 PB7 resets that PHY; the EVB4 Bluetooth description
+ * also claims PB7, but that device is not fitted on this board.
+ */
+&wireless_bluetooth {
+	status = "disabled";
+};
+
+/* UART8 CTS and GMAC1 RX clock both use GPIO3 PA5 on the EVB4 mux. */
+&uart8 {
+	status = "disabled";
+};
+
+&gmac1 {
+	phy-mode = "rgmii-rxid";
+	clock_in_out = "input";
+
+	snps,reset-gpio = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
+	snps,reset-delays-us = <0 20000 100000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&gmac1_miim
+		     &gmac1_tx_bus2
+		     &gmac1_rx_bus2
+		     &gmac1_rgmii_clk
+		     &gmac1_rgmii_bus
+		     &gmac1_clkinout>;
+
+	tx_delay = <0x44>;
+	rx_delay = <0x18>;
+	phy-handle = <&rgmii_phy1>;
+	status = "okay";
+};
+
+&mdio1 {
+	rgmii_phy1: ethernet-phy@0 {
+		compatible = "ethernet-phy-ieee802.3-c22";
+		reg = <0>;
+	};
+};
+
+/*
  * The EVB4 routes its FUSB302 and RTC through I2C8.  The target hardware's
  * 5.10 board description routes those devices through I2C6 instead; probing
  * the EVB4 FUSB302 location causes continuous address 0x22 timeouts.
